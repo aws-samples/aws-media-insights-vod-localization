@@ -4,33 +4,33 @@
     <br>
     <b-container>
       <b-alert
-        :show="dismissCountDown"
-        dismissible
-        variant="danger"
-        @dismissed="dismissCountDown=0"
-        @dismiss-count-down="countDownChanged"
+          :show="dismissCountDown"
+          dismissible
+          variant="danger"
+          @dismissed="dismissCountDown=0"
+          @dismiss-count-down="countDownChanged"
       >
         {{ uploadErrorMessage }}
       </b-alert>
       <b-alert
-        :show="showInvalidFile"
-        variant="danger"
+          :show="showInvalidFile"
+          variant="danger"
       >
         {{ invalidFileMessages[invalidFileMessages.length-1] }}
       </b-alert>
       <h1>Upload Content</h1>
       <p>{{ description }}</p>
       <vue-dropzone
-        id="dropzone"
-        ref="myVueDropzone"
-        :awss3="awss3"
-        :options="dropzoneOptions"
-        @vdropzone-s3-upload-error="s3UploadError"
-        @vdropzone-file-added="fileAdded"
-        @vdropzone-removed-file="fileRemoved"
-        @vdropzone-success="runWorkflow"
-        @vdropzone-sending="upload_in_progress=true"
-        @vdropzone-queue-complete="upload_in_progress=false"
+          id="dropzone"
+          ref="myVueDropzone"
+          :awss3="awss3"
+          :options="dropzoneOptions"
+          @vdropzone-s3-upload-error="s3UploadError"
+          @vdropzone-file-added="fileAdded"
+          @vdropzone-removed-file="fileRemoved"
+          @vdropzone-success="runWorkflow"
+          @vdropzone-sending="upload_in_progress=true"
+          @vdropzone-queue-complete="upload_in_progress=false"
       />
       <br>
       <b-button v-b-toggle.collapse-2 class="m-1">
@@ -44,20 +44,18 @@
       </b-button>
       <br>
       <!-- TODO: add a drop-down option in this modal to choose update workflow, then update workflowConfigWithInput to include the appropriate workflow config -->
-      <!--      <b-button-->
-      <!--        :pressed="false"-->
-      <!--        size="sm"-->
-      <!--        variant="link"-->
-      <!--        class="text-decoration-none"-->
-      <!--        @click="showExecuteApi = true"-->
-      <!--      >-->
-      <!--        Show API request to run workflow-->
-      <!--      </b-button>-->
+      <b-button
+          :pressed="false"
+          size="sm"
+          variant="link"
+          class="text-decoration-none"
+          @click="showExecuteApi = true"
+      ></b-button>
       <b-modal
-        v-model="showExecuteApi"
-        scrollable
-        title="REST API"
-        ok-only
+          v-model="showExecuteApi"
+          scrollable
+          title="REST API"
+          ok-only
       >
         <label>Request URL:</label>
         <pre v-highlightjs><code class="bash">POST {{ WORKFLOW_API_ENDPOINT }}workflow/execution</code></pre>
@@ -79,10 +77,10 @@
             <b-card header="Video Operators">
               <b-form-group>
                 <b-form-checkbox-group
-                  id="checkbox-group-1"
-                  v-model="enabledOperators"
-                  :options="videoOperators"
-                  name="flavour-1"
+                    id="checkbox-group-1"
+                    v-model="enabledOperators"
+                    :options="videoOperators"
+                    name="flavour-1"
                 ></b-form-checkbox-group>
                 <label>Thumbnail position: </label>
                 <b-form-input v-model="thumbnail_position" type="range" min="1" max="20" step="1"></b-form-input> {{ thumbnail_position }} sec
@@ -104,11 +102,11 @@
                     <br>
                     Custom Vocabulary
                     <b-form-select
-                      v-model="customVocab"
-                      :options="customVocabularyList"
-                      text-field="name_and_status"
-                      value-field="name"
-                      disabled-field="notEnabled"
+                        v-model="customVocab"
+                        :options="customVocabularyList"
+                        text-field="name_and_status"
+                        value-field="name"
+                        disabled-field="notEnabled"
                     >
                       <template v-slot:first>
                         <b-form-select-option :value="null" disabled>
@@ -126,6 +124,18 @@
                     <b-form-input v-model="existingSubtitlesFilename" placeholder="(optional) Enter .vtt filename"></b-form-input>
                   </div>
                 </b-form-checkbox-group>
+                <div v-if="compatibleLanguageModels.length > 0 && enabledOperators.includes('Transcribe')"><b>Language Models:</b>
+                  <b-form-select
+                      v-model="languageModel"
+                      :options="compatibleLanguageModels"
+                  >
+                    <template v-slot:first>
+                      <b-form-select-option :value="null" disabled>
+                        (optional)
+                      </b-form-select-option>
+                    </template>
+                  </b-form-select>
+                </div>
               </b-form-group>
               <div v-if="audioFormError" style="color:red">
                 {{ audioFormError }}
@@ -134,20 +144,20 @@
             <b-card header="Text Operators">
               <b-form-group>
                 <b-form-checkbox-group
-                  id="checkbox-group-3"
-                  v-model="enabledOperators"
-                  :options="textOperators"
-                  name="flavour-3"
+                    id="checkbox-group-3"
+                    v-model="enabledOperators"
+                    :options="textOperators"
+                    name="flavour-3"
                 ></b-form-checkbox-group>
                 <div v-if="enabledOperators.includes('Translate')">
-                   <!-- && customTerminologyList.length > 0"> -->
-                   <!-- && customTerminologyList.filter(x => x.SourceLanguageCode === sourceLanguageCode).length > 0"> -->
+                  <!-- && customTerminologyList.length > 0"> -->
+                  <!-- && customTerminologyList.filter(x => x.SourceLanguageCode === sourceLanguageCode).length > 0"> -->
                   <div v-if="customTerminology.length > 0"><b>Custom Terminologies:</b> ({{ customTerminology.length }} selected)</div>
                   <div v-else><b>Custom Terminologies:</b> ({{ customTerminology.length }} selected)</div>
                   <b-form-select
-                    v-model="customTerminology"
-                    :options="customTerminologyList.filter(x => x.SourceLanguageCode === sourceLanguageCode).map( x => { return {'text': x.Name + ' (' + x.TargetLanguageCodes + ')'  , 'value': {'Name': x.Name, 'TargetLanguageCodes': x.TargetLanguageCodes}}})"
-                    multiple
+                      v-model="customTerminology"
+                      :options="customTerminologyList.filter(x => x.SourceLanguageCode === sourceLanguageCode).map( x => { return {'text': x.Name + ' (' + x.TargetLanguageCodes + ')'  , 'value': {'Name': x.Name, 'TargetLanguageCodes': x.TargetLanguageCodes}}})"
+                      multiple
                   >
                   </b-form-select>
                   <div v-if="overlappingTerminologies.length > 0" style="color:red">
@@ -158,21 +168,21 @@
                       </li>
                     </ul>
                   </div>
-                  <div v-if="parallelDataList.length > 0"><b>Parallel Data:</b> ({{ parallelData.length }} selected) </div>
-                  <div v-else><b>Parallel Data:</b></div>
-                  <b-form-select
-                    v-model="parallelData"
-                    :options="parallelDataList.filter(x => x.SourceLanguageCode === sourceLanguageCode).map( x => { return {'text': x.Name + ' (' + x.TargetLanguageCodes + ')'  , 'value': {'Name': x.Name, 'TargetLanguageCodes': x.TargetLanguageCodes}}})"
-                    multiple
-                  >
-                  </b-form-select>
-                  <div v-if="overlappingParallelData.length > 0" style="color:red">
-                    You must not select Parallel Data that define translations for the same language. The following Parallel Data overlap:
-                    <ul id="overlapping_parallel_data">
-                      <li v-for="parallel_data in overlappingParallelData">
-                        {{ parallel_data }}
-                      </li>
-                    </ul>
+                  <div v-if="parallelDataList.length > 0"><b>Parallel Data:</b> ({{ parallelData.length }} selected)
+                    <b-form-select
+                        v-model="parallelData"
+                        :options="parallelDataList.filter(x => x.SourceLanguageCode === sourceLanguageCode).map( x => { return {'text': x.Name + ' (' + x.TargetLanguageCodes + ')'  , 'value': {'Name': x.Name, 'TargetLanguageCodes': x.TargetLanguageCodes}}})"
+                        multiple
+                    >
+                    </b-form-select>
+                    <div v-if="overlappingParallelData.length > 0" style="color:red">
+                      You must not select Parallel Data that define translations for the same language. The following Parallel Data overlap:
+                      <ul id="overlapping_parallel_data">
+                        <li v-for="parallel_data in overlappingParallelData">
+                          {{ parallel_data }}
+                        </li>
+                      </ul>
+                    </div>
                   </div>
                 </div>
                 <div v-if="enabledOperators.includes('Translate')" >
@@ -182,19 +192,19 @@
                       {{ textFormError }}
                     </div>
                     <voerro-tags-input
-                      v-model="selectedTranslateLanguages"
-                      element-id="target_language_tags"
-                      :limit="10"
-                      :hide-input-on-limit="true"
-                      :existing-tags="translateLanguageTags"
-                      :only-existing-tags="true"
-                      :add-tags-on-space="true"
-                      :add-tags-on-comma="true"
-                      :add-tags-on-blur="true"
-                      :sort-search-results="true"
-                      :typeahead-always-show="true"
-                      :typeahead-hide-discard="true"
-                      :typeahead="true"
+                        v-model="selectedTranslateLanguages"
+                        element-id="target_language_tags"
+                        :limit="10"
+                        :hide-input-on-limit="true"
+                        :existing-tags="translateLanguageTags"
+                        :only-existing-tags="true"
+                        :add-tags-on-space="true"
+                        :add-tags-on-comma="true"
+                        :add-tags-on-blur="true"
+                        :sort-search-results="true"
+                        :typeahead-always-show="true"
+                        :typeahead-hide-discard="true"
+                        :typeahead="true"
                     />
                   </b-form-group>
                 </div>
@@ -217,14 +227,14 @@
         Execution History
       </label>
       <b-table
-        :fields="fields"
-        bordered
-        hover
-        small
-        responsive
-        show-empty
-        fixed
-        :items="executed_assets"
+          :fields="fields"
+          bordered
+          hover
+          small
+          responsive
+          show-empty
+          fixed
+          :items="executed_assets"
       >
         <template v-slot:cell(workflow_status)="data">
           <a v-if="data.item.workflow_status !== 'Queued'" href="" @click.stop.prevent="openWindow(data.item.state_machine_console_link)">{{ data.item.workflow_status }}</a>
@@ -238,18 +248,18 @@
       </b-button>
       <br>
       <b-button
-        :pressed="false"
-        size="sm"
-        variant="link"
-        class="text-decoration-none"
-        @click="showWorkflowStatusApi = true"
+          :pressed="false"
+          size="sm"
+          variant="link"
+          class="text-decoration-none"
+          @click="showWorkflowStatusApi = true"
       >
         Show API request to get execution history
       </b-button>
       <b-modal
-        v-model="showWorkflowStatusApi"
-        title="REST API"
-        ok-only
+          v-model="showWorkflowStatusApi"
+          title="REST API"
+          ok-only
       >
         <label>Request URL:</label>
         <pre v-highlightjs><code class="bash">GET {{ WORKFLOW_API_ENDPOINT }}workflow/execution/asset/{asset_id}</code></pre>
@@ -311,9 +321,9 @@ export default {
       invalid_file_types: 0,
       upload_in_progress: false,
       enabledOperators: [
-        "thumbnail", 
-        "Transcribe", 
-        "Translate", 
+        "thumbnail",
+        "Transcribe",
+        "Translate",
         "Subtitles"
       ],
       enable_caption_editing: false,
@@ -345,6 +355,8 @@ export default {
       customTerminologyList: [],
       parallelData: [],
       parallelDataList: [],
+      languageModel: null,
+      languageModelsList: [],
       existingSubtitlesFilename: "",
       transcribeLanguage: "en-US",
       transcribeLanguages: [
@@ -469,6 +481,11 @@ export default {
     }
   },
   computed: {
+    compatibleLanguageModels() {
+      // This function returns a list of language models that can be used for the language specified as the source language for Transcribe
+      return this.languageModelsList.filter(x => x.LanguageCode === this.transcribeLanguage).map( x => { return {'text': x.Name, 'value': {'Name': x.Name}}})
+    },
+
     overlappingTerminologies() {
       // This function returns a list of terminologies that contain the translations for the same language.
       // flatten the array of TargetLanguageCodes arrays
@@ -517,14 +534,14 @@ export default {
     // for the voerro-tags-input. The flipping is done in here as a computed property.
     translateLanguageTags() {
       return this.translateLanguages
-        .map(x => {return {"text": x.value, "value": x.text}})
-        //FIXME: filtering source languge from language tag list doesn't refresh 
-        // tag picker in UI.  So, if source language is English to start, English is 
-        // removed from the translation target languages.  When source language
-        // is changed to Spanish, Engish is added back to the tags on the Vue 
-        // Translation component but Engish tag is still missing on the tag
-        // picker.  For now, leave the source language in the list.
-        //.filter(x => x.text !== this.sourceLanguageCode)
+          .map(x => {return {"text": x.value, "value": x.text}})
+      //FIXME: filtering source languge from language tag list doesn't refresh
+      // tag picker in UI.  So, if source language is English to start, English is
+      // removed from the translation target languages.  When source language
+      // is changed to Spanish, Engish is added back to the tags on the Vue
+      // Translation component but Engish tag is still missing on the tag
+      // picker.  For now, leave the source language in the list.
+      //.filter(x => x.text !== this.sourceLanguageCode)
     },
     ...mapState(['execution_history']),
     sourceLanguageCode() {
@@ -589,12 +606,12 @@ export default {
           this.videoFormError ||
           this.overlappingTerminologies.length > 0 ||
           this.overlappingParallelData > 0
-      ) 
+      )
         validStatus = false;
       return validStatus;
     },
     videoWorkflowConfig() {
-        // Define the video workflow based on user specified options for workflow configuration.
+      // Define the video workflow based on user specified options for workflow configuration.
       const PreprocessVideo = {
         Thumbnail: {
           ThumbnailPosition: this.thumbnail_position.toString(),
@@ -615,11 +632,11 @@ export default {
           Enabled: this.enabledOperators.includes("shotDetection")
         },
         celebrityRecognition: {
-          MediaType: "Video", 
+          MediaType: "Video",
           Enabled: this.enabledOperators.includes("celebrityRecognition")
         },
         labelDetection : {
-          MediaType: "Video", 
+          MediaType: "Video",
           Enabled: this.enabledOperators.includes("labelDetection")
         },
         personTracking: {
@@ -634,11 +651,11 @@ export default {
                   : this.faceCollectionId
         },
         textDetection: {
-          MediaType: "Video", 
+          MediaType: "Video",
           Enabled: this.enabledOperators.includes("textDetection")
         },
         Mediaconvert: {
-          MediaType: "Video", 
+          MediaType: "Video",
           Enabled: false
         },
         GenericDataLookup: {
@@ -657,11 +674,11 @@ export default {
       }     
       const AnalyzeText = {
         ComprehendEntities: {
-          MediaType: "Text", 
+          MediaType: "Text",
           Enabled: this.enabledOperators.includes("ComprehendEntities")
         },
         ComprehendKeyPhrases: {
-          MediaType: "Text", 
+          MediaType: "Text",
           Enabled: this.enabledOperators.includes("ComprehendKeyPhrases")
         }
       }
@@ -671,21 +688,21 @@ export default {
       }
       const TransformText = {
         WebToSRTCaptions: {
-              MediaType: "MetadataOnly",
-              TargetLanguageCodes: Object.values(this.selectedTranslateLanguages.map(x => x.text)).filter(x => x !== this.sourceLanguageCode).concat(this.sourceLanguageCode),
-              Enabled: this.enabledOperators.includes("Translate")
-            },
-            WebToVTTCaptions: {
-              MediaType: "MetadataOnly",
-              TargetLanguageCodes: Object.values(this.selectedTranslateLanguages.map(x => x.text)).filter(x => x !== this.sourceLanguageCode).concat(this.sourceLanguageCode),
-              Enabled: this.enabledOperators.includes("Translate")
-            },
-            PollyWebCaptions: {
-              MediaType:"MetadataOnly",
-              Enabled: this.enabledOperators.includes("Translate"),
-              SourceLanguageCode: this.sourceLanguageCode
-            }
-          }
+          MediaType: "MetadataOnly",
+          TargetLanguageCodes: Object.values(this.selectedTranslateLanguages.map(x => x.text)).filter(x => x !== this.sourceLanguageCode).concat(this.sourceLanguageCode),
+          Enabled: this.enabledOperators.includes("Translate")
+        },
+        WebToVTTCaptions: {
+          MediaType: "MetadataOnly",
+          TargetLanguageCodes: Object.values(this.selectedTranslateLanguages.map(x => x.text)).filter(x => x !== this.sourceLanguageCode).concat(this.sourceLanguageCode),
+          Enabled: this.enabledOperators.includes("Translate")
+        },
+        PollyWebCaptions: {
+          MediaType:"MetadataOnly",
+          Enabled: this.enabledOperators.includes("Translate"),
+          SourceLanguageCode: this.sourceLanguageCode
+        }
+      }
       const WebCaptionsStage2 = {
         WebCaptions: {
           MediaType: "MetadataOnly",
@@ -705,7 +722,7 @@ export default {
           SourceLanguageCode: this.sourceLanguageCode
         }
       }
-    
+
       const workflow_config = {
         Name: "ContentLocalizationWorkflow",
       }
@@ -757,6 +774,7 @@ export default {
     this.listVocabulariesRequest()
     this.listTerminologiesRequest()
     this.listParallelDataRequest()
+    this.listLanguageModelsRequest()
   },
   beforeDestroy () {
     clearInterval(this.workflow_status_polling)
@@ -851,7 +869,7 @@ export default {
       if (this.hasAssetParam) {
         if (media_type === "video") {
           this.workflow_config = vm.videoWorkflowConfig;
-            this.workflow_config["Input"] = { AssetId: this.assetIdParam, Media: { Video: {} } };
+          this.workflow_config["Input"] = { AssetId: this.assetIdParam, Media: { Video: {} } };
         } else {
           vm.s3UploadError(
               "Unsupported media type, " + this.$route.query.mediaType + "."
@@ -870,7 +888,7 @@ export default {
               }
             }
           }
-          
+
 
           // Add optional parameters to workflow config:
           if (this.customTerminology !== null) {
@@ -884,7 +902,7 @@ export default {
           }
           if (this.existingSubtitlesFilename == "") {
             if ("ExistingSubtitlesObject" in this.workflow_config.Configuration.WebCaptionsStage2.WebCaptions){
-                delete this.workflow_config.Configuration.WebCaptionsStage2.WebCaptions.ExistingSubtitlesObject
+              delete this.workflow_config.Configuration.WebCaptionsStage2.WebCaptions.ExistingSubtitlesObject
             }
           }
           else {
@@ -892,10 +910,10 @@ export default {
             this.workflow_config.Configuration.WebCaptionsStage2.WebCaptions.ExistingSubtitlesObject.Bucket=this.DATAPLANE_BUCKET
             this.workflow_config.Configuration.WebCaptionsStage2.WebCaptions.ExistingSubtitlesObject.Key=this.existingSubtitlesFilename
           }
-        
-          
+
+
           // Add input parameter to workflow config:
-          
+
         } else if (media_type === "application/json") {
           // JSON files may be uploaded for the genericDataLookup operator, but
           // we won't run a workflow for json file types.
@@ -928,7 +946,7 @@ export default {
         let wf_id = response.data.Id;
         let executed_asset = {
           asset_id: asset_id,
-          file_name: s3Key,
+          file_name: s3Key.replace('public/upload/', ''),
           workflow_status: "",
           state_machine_console_link: "",
           wf_id: wf_id
@@ -939,7 +957,7 @@ export default {
         this.assetIdParam = "";
       } catch (error) {
         alert(
-          "ERROR: Failed to start workflow. Check Workflow API logs."
+            "ERROR: Failed to start workflow. Check Workflow API logs."
         );
         console.log(error)
       }
@@ -1003,24 +1021,24 @@ export default {
       let apiName = 'mieWorkflowApi'
       let path = 'service/translate/list_terminologies'
       let requestOpts = {
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          response: true
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        response: true
       };
       try {
         let response = await this.$Amplify.API.get(apiName, path, requestOpts);
         this.customTerminologyList  = response.data['TerminologyPropertiesList']
-          // .map(terminology => {
-          //   return {
-          //     'Name': terminology.Name,
-          //     'SourceLanguageCode': terminology.SourceLanguageCode,
-          //     'TargetLanguageCodes': terminology.TargetLanguageCodes
-          //   }
-          // })
+        // .map(terminology => {
+        //   return {
+        //     'Name': terminology.Name,
+        //     'SourceLanguageCode': terminology.SourceLanguageCode,
+        //     'TargetLanguageCodes': terminology.TargetLanguageCodes
+        //   }
+        // })
       } catch (error) {
         alert(
-          "ERROR: Failed to start workflow. Check Workflow API logs."
+            "ERROR: Failed to start workflow. Check Workflow API logs."
         );
         console.log(error)
       }
@@ -1029,36 +1047,36 @@ export default {
       let apiName = 'mieWorkflowApi'
       let path = 'service/transcribe/list_vocabularies'
       let requestOpts = {
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          response: true
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        response: true
       };
       try {
         let response = await this.$Amplify.API.get(apiName, path, requestOpts);
         this.customVocabularyList = response.data["Vocabularies"].map(({VocabularyName, VocabularyState, LanguageCode}) => ({
-            name: VocabularyName,
-            status: VocabularyState,
-            language_code: LanguageCode,
-            name_and_status: VocabularyState === "READY" ?
-                VocabularyName+" ("+LanguageCode+")" :
-                VocabularyName + " [" + VocabularyState + "]",
-            notEnabled: (VocabularyState === "PENDING" || LanguageCode !== this.transcribeLanguage)
-          }))
-          // if any vocab is PENDING, then poll status until it is not PENDING. This is necessary so custom vocabs become selectable in the GUI as soon as they become ready.
-          if (this.customVocabularyList.filter(item => item.status === "PENDING").length > 0) {
-            if (this.vocab_status_polling == null) {
-              this.pollVocabularyStatus();
-            }
-          } else {
-            if (this.vocab_status_polling != null) {
-              clearInterval(this.vocab_status_polling)
-              this.vocab_status_polling = null
-            }
+          name: VocabularyName,
+          status: VocabularyState,
+          language_code: LanguageCode,
+          name_and_status: VocabularyState === "READY" ?
+              VocabularyName+" ("+LanguageCode+")" :
+              VocabularyName + " [" + VocabularyState + "]",
+          notEnabled: (VocabularyState === "PENDING" || LanguageCode !== this.transcribeLanguage)
+        }))
+        // if any vocab is PENDING, then poll status until it is not PENDING. This is necessary so custom vocabs become selectable in the GUI as soon as they become ready.
+        if (this.customVocabularyList.filter(item => item.status === "PENDING").length > 0) {
+          if (this.vocab_status_polling == null) {
+            this.pollVocabularyStatus();
           }
+        } else {
+          if (this.vocab_status_polling != null) {
+            clearInterval(this.vocab_status_polling)
+            this.vocab_status_polling = null
+          }
+        }
       } catch (error) {
         alert(
-          "ERROR: Failed to get vocabularies."
+            "ERROR: Failed to get vocabularies."
         );
         console.log(error)
       }
@@ -1067,23 +1085,46 @@ export default {
       let apiName = 'mieWorkflowApi'
       let path = 'service/translate/list_parallel_data'
       let requestOpts = {
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          response: true
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        response: true
       };
       try {
         let response = await this.$Amplify.API.get(apiName, path, requestOpts);
-        console.log(response)
         this.parallelDataList  = response.data['ParallelDataPropertiesList'].map(parallel_data => {
-            return {
-              'Name': parallel_data.Name,
-              'SourceLanguageCode': parallel_data.SourceLanguageCode,
-              'TargetLanguageCodes': parallel_data.TargetLanguageCodes
-            }
-          })
+          return {
+            'Name': parallel_data.Name,
+            'SourceLanguageCode': parallel_data.SourceLanguageCode,
+            'TargetLanguageCodes': parallel_data.TargetLanguageCodes
+          }
+        })
       } catch (error) {
         console.log("ERROR: Failed to get parallel data. Check Workflow API logs.");
+        console.log(error)
+      }
+    },
+    listLanguageModelsRequest: async function () {
+      let apiName = 'mieWorkflowApi'
+      let path = 'service/transcribe/list_language_models'
+      let requestOpts = {
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        response: true
+      };
+      try {
+        let response = await this.$Amplify.API.get(apiName, path, requestOpts);
+        this.languageModelsList  = response.data['Models'].map(models => {
+          return {
+            'Name': models.ModelName,
+            'LanguageCode': models.LanguageCode,
+            'ModelStatus': models.ModelStatus,
+            'FailureReason': models.FailureReason,
+          }
+        })
+      } catch (error) {
+        console.log("ERROR: Failed to get language models. Check Workflow API logs.");
         console.log(error)
       }
     }

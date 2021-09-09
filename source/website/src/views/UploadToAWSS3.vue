@@ -673,12 +673,12 @@ export default {
         WebToSRTCaptions: {
               MediaType: "MetadataOnly",
               TargetLanguageCodes: Object.values(this.selectedTranslateLanguages.map(x => x.text)).filter(x => x !== this.sourceLanguageCode).concat(this.sourceLanguageCode),
-              Enabled: this.enabledOperators.includes("Translate")
+              Enabled: this.enabledOperators.includes("Transcribe") || this.enabledOperators.includes("Translate")
             },
             WebToVTTCaptions: {
               MediaType: "MetadataOnly",
               TargetLanguageCodes: Object.values(this.selectedTranslateLanguages.map(x => x.text)).filter(x => x !== this.sourceLanguageCode).concat(this.sourceLanguageCode),
-              Enabled: this.enabledOperators.includes("Translate")
+              Enabled: this.enabledOperators.includes("Transcribe") || this.enabledOperators.includes("Translate")
             },
             PollyWebCaptions: {
               MediaType:"MetadataOnly",

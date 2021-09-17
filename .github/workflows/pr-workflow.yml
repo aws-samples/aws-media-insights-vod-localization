@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize]
     branches:
       - development
+  workflow_dispatch:
 
 jobs:
   # Build and new deploy based on latest release of MIE
@@ -23,34 +24,31 @@ jobs:
           aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
 
-      - name: Generate short sha
+      - name: Setup build environment
         run: |
           echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+          DATETIME=$(date '+%s')
+          echo "DIST_OUTPUT_BUCKET=aws-content-localization-$DATETIME-dist" >> $GITHUB_ENV
+          echo "TEMPLATE_OUTPUT_BUCKET=aws-content-localization-$DATETIME" >> $GITHUB_ENV
 
       - name: Run build script
         run: |
           cd deployment
           CONTENT_LOCALIZATION_STACK_NAME="pr${SHORT_SHA}"
-          EMAIL=micontentlocalization@gmail.com
-          REGION=us-west-2
-          VERSION="pr-${SHORT_SHA}"
-          DIST_OUTPUT_BUCKET=micl-dev
-          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          ./build.sh $DIST_OUTPUT_BUCKET-$REGION $VERSION $REGION
-          echo "read in the template"
-          read -r TEMPLATE < ../src/templateUrlMieRelease.txt
-
-      - name: 'Upload One-click Deployment Artifact'
-        uses: actions/upload-artifact@v2
-        with:
-          name: templateUrlMieRelease
-          path: src/templateUrlMieRelease.txt
-          retention-days: 3
-      - name: 'Upload Developer Deployment Artifact'
+          EMAIL="micontentlocalization@gmail.com"
+          REGION="us-west-2"
+          VERSION="0.0.0"
+          aws s3 mb s3://$DIST_OUTPUT_BUCKET-$REGION --region $REGION
+          aws s3 mb s3://$TEMPLATE_OUTPUT_BUCKET --region $REGION
+          ./build-s3-dist.sh --template-bucket ${TEMPLATE_OUTPUT_BUCKET} --code-bucket ${DIST_OUTPUT_BUCKET} --version ${VERSION} --region ${REGION}
+          echo "Templates artifacts:"
+          cat ./template_url_that_uses_an_existing_mie_stack.txt
+          cat ./template_url_that_deploys_mie_as_nested_stack.txt
+      - name: 'Upload CL One-click Deployment Artifact'
         uses: actions/upload-artifact@v2
         with:
           name: templateUrlMieDevelopment
-          path: src/templateUrlMieDevelopment.txt
+          path: deployment/template_url_that_uses_an_existing_mie_stack.txt
           retention-days: 3
 
   build-mie-dev-us-west-2:
@@ -81,8 +79,8 @@ jobs:
           DIST_OUTPUT_BUCKET=micl-dev
           TEMPLATE_OUTPUT_BUCKET=micl-dev-us-west-2
           ./build-s3-dist.sh --no-layer --template-bucket $TEMPLATE_OUTPUT_BUCKET --code-bucket $DIST_OUTPUT_BUCKET --version $VERSION --region $REGION
-          read -r TEMPLATE < templateUrl.txt
-          pwd
+          echo "Templates artifact:"
+          cat ./templateUrl.txt
       - name: 'Upload MIE One-click Deployment Artifact'
         uses: actions/upload-artifact@v2
         with:
@@ -108,7 +106,7 @@ jobs:
             aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
             aws-region: us-west-2
 
-      # FIXME - need to identify what to scan for here - new entries in packages, 
+      # FIXME - need to identify what to scan for here - new entries in packages,
       # python dependencies, other copyrighted code ...
       - name: Get stack name
         run: |
@@ -117,18 +115,18 @@ jobs:
       - name: Scan for new third party packages
         run: |
           echo "TBD - scan for new 3rd party pacakges"
-      
+
       # FIXME - need to identify what to scan for here - is Trufflehog enough?
       - name: Scan for sensitive data
         run: |
           echo "TBD - Scan for sensitive data"
-      
+
       # FIXME - need to make sure this is working properly
       # scan for various types of keys and tokens
       - name: Trufflehog Scan
         uses: edplato/trufflehog-actions-scan@master
         with:
-          scanArguments: '--regex --entropy=False'   
+          scanArguments: '--regex --entropy=False'
 
   scan-us-west-2:
     needs: build-content-localization-dev-us-west-2
@@ -157,13 +155,12 @@ jobs:
         continue-on-error: true
         with:
             input_path: deployment
-  
+
       # FIXME - This is not working.  Need to test more
       # check it with Hawkeye
       # - name: Hawkeye Scanner
       #   uses: ./.github/actions/hawkeye-scan
-  
-  
+
   deploy-mie-dev-us-west-2:
     needs: build-mie-dev-us-west-2
     runs-on: ubuntu-latest
@@ -182,26 +179,42 @@ jobs:
             aws-region: us-west-2
       - name: Generate short sha
         run: |
+          echo "CONTENT_LOCALIZATION_STACK_NAME=pr`git rev-parse --short HEAD`" >> $GITHUB_ENV
           echo "MIE_STACK_NAME=prm`git rev-parse --short HEAD`" >> $GITHUB_ENV
           echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
       - name: Download all workflow run artifacts
         uses: actions/download-artifact@v2
       - name: Deploy
         run: |
-          EMAIL=micontentlocalization@gmail.com
+          EMAIL=sample@example.com
           REGION=us-west-2
           VERSION="pr-${SHORT_SHA}"
           DIST_OUTPUT_BUCKET=micl-dev
           TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          TEMPLATE=`cat templateUrl/templateUrl.txt`
-          
-          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
-          aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
+          MIE_TEMPLATE=`cat templateUrl/templateUrl.txt`
+
+          # Delete $MIE_STACK_NAME if it already exists.
+          # This is necessary in order to rerun github action workflows.
+          # If $MIE_STACK_NAME exists...
+          if [ $(echo $(aws cloudformation list-stacks --query 'StackSummaries[?StackName==`$MIE_STACK_NAME`]' --output text)  | tr -d '\n' | wc -c) > 0 ]; then
+            echo "Removing stack, $CONTENT_LOCALIZATION_STACK_NAME"
+            # Then delete $MIE_STACK_NAME, but first delete $CONTENT_LOCALIZATION_STACK_NAME since we can't delete $MIE_STACK_NAME until we've removed the dependent stack.
+            aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+
+            echo "Removing stack, $MIE_STACK_NAME"
+            aws cloudformation delete-stack --stack-name $MIE_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $MIE_STACK_NAME
+          fi
+
+          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $MIE_TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
+
+          aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $MIE_TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
           aws cloudformation wait stack-create-complete --stack-name $MIE_STACK_NAME
           exit 0
 
   deploy-content-localization-dev-us-west-2:
-    needs: 
+    needs:
       - deploy-mie-dev-us-west-2
       - build-content-localization-dev-us-west-2
       - scan-us-west-2
@@ -234,12 +247,30 @@ jobs:
           VERSION="pr-${SHORT_SHA}"
           DIST_OUTPUT_BUCKET=micl-dev
           TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          CLOUDFORMATION_TEMPLATE=`cat templateUrlMieDevelopment/templateUrlMieDevelopment.txt`
-          
-          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLOUDFORMATION_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=ElasticSearchNodeSize,ParameterValue=t2.small.elasticsearch ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
-          aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLOUDFORMATION_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=ElasticSearchNodeSize,ParameterValue=t2.small.elasticsearch ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
+          CLO_TEMPLATE=`cat templateUrlMieDevelopment/template_url_that_uses_an_existing_mie_stack.txt`
+
+          # Delete $CONTENT_LOCALIZATION_STACK_NAME if it already exists.
+          # This is necessary in order to rerun github action workflows.
+          # If $CONTENT_LOCALIZATION_STACK_NAME exists...
+          if [ $(echo $(aws cloudformation list-stacks --query 'StackSummaries[?StackName==`$CONTENT_LOCALIZATION_STACK_NAME`]' --output text)  | tr -d '\n' | wc -c) > 0 ]; then
+            # Then delete $CONTENT_LOCALIZATION_STACK_NAME...
+            echo "Removing $CONTENT_LOCALIZATION_STACK_NAME so we can use that stack name again"
+            aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            if [ $? -ne 0 ]; then
+              # try once more if the wait failed
+              echo "Trying to remove $CONTENT_LOCALIZATION_STACK_NAME one more time"
+              aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+              aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            fi
+          fi
+
+          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLO_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME ParameterKey=ElasticSearchNodeSize,ParameterValue=t3.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
+
+          aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLO_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME ParameterKey=ElasticSearchNodeSize,ParameterValue=t3.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
           aws cloudformation wait stack-create-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
           exit 0
+
 
   test-content-localization-dev-us-west-2:
     needs: deploy-content-localization-dev-us-west-2
@@ -251,7 +282,7 @@ jobs:
         uses: actions/checkout@v2.3.4
         with:
           ref: ${{ github.sha }}
-      
+
       - name: Initialize test AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:

@@ -4,31 +4,133 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # PURPOSE:
-#   Build cloud formation templates for the Media Insights Engine
+#   Build cloud formation templates for the AWS Content Localiztion solution
 #
 # USAGE:
-#  ./build-s3-dist.sh {SOURCE-BUCKET} {VERSION} {REGION} [PROFILE]
-#    SOURCE-BUCKET should be the name for the S3 bucket location where the
-#      template will source the Lambda code from.
-#    VERSION should be in a format like v1.0.0
+#  ./build-s3-dist.sh [-h] [-v] --template-bucket {TEMPLATE_BUCKET} --code-bucket {CODE_BUCKET} --version {VERSION} --region {REGION} --profile {PROFILE}
+#    TEMPLATE_BUCKET should be the name for the S3 bucket location where MIE
+#      cloud formation templates should be saved.
+#    CODE_BUCKET should be the name for the S3 bucket location where cloud
+#      formation templates should find Lambda source code packages.
+#    VERSION can be anything but should be in a format like v1.0.0 just to be consistent
+#      with the official solution release labels.
 #    REGION needs to be in a format like us-east-1
-#    PROFILE is optional. It's the profile  that you have setup in ~/.aws/config
-#      that you want to use for aws CLI commands.
+#    PROFILE is optional. It's the profile that you have setup in ~/.aws/config
+#      that you want to use for AWS CLI commands.
+#
+#    The following options are available:
+#
+#     -h | --help       Print usage
+#     -v | --verbose    Print script debug info
 #
 ###############################################################################
 
-# Check to see if input has been provided:
-if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
-    echo "Please provide the base source bucket name,  version where the lambda code will eventually reside and the region of the deploy."
-    echo "USAGE: ./build-s3-dist.sh SOURCE-BUCKET VERSION REGION [PROFILE]"
-    echo "For example: ./build-s3-dist.sh mie01 v1.0.0 us-east-1 default"
-    exit 1
-fi
+trap cleanup_and_die SIGINT SIGTERM ERR
 
-bucket=$1
-version=$2
-region=$3
-if [ -n "$4" ]; then profile=$4; fi
+usage() {
+  msg "$msg"
+  cat <<EOF
+Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-v] [--profile PROFILE] --template-bucket TEMPLATE_BUCKET --code-bucket CODE_BUCKET --version VERSION --region REGION
+
+Available options:
+
+-h, --help        Print this help and exit (optional)
+-v, --verbose     Print script debug info (optional)
+--template-bucket S3 bucket to put cloud formation templates
+--code-bucket     S3 bucket to put Lambda code packages
+--version         Arbitrary string indicating build version
+--region          AWS Region, formatted like us-west-2
+--profile         AWS profile for CLI commands (optional)
+EOF
+  exit 1
+}
+
+cleanup_and_die() {
+  trap - SIGINT SIGTERM ERR
+  echo "Trapped signal."
+  cleanup
+  die 1
+}
+
+cleanup() {
+  # Deactivate and remove the temporary python virtualenv used to run this script
+  if [[ "$VIRTUAL_ENV" != "" ]];
+  then
+    deactivate
+    echo "------------------------------------------------------------------------------"
+    echo "Cleaning up complete"
+    echo "------------------------------------------------------------------------------"
+  fi
+}
+
+msg() {
+  echo >&2 -e "${1-}"
+}
+
+die() {
+  local msg=$1
+  local code=${2-1} # default exit status 1
+  msg "$msg"
+  exit "$code"
+}
+
+parse_params() {
+  # default values of variables set from params
+  flag=0
+  param=''
+
+  while :; do
+    case "${1-}" in
+    -h | --help) usage ;;
+    -v | --verbose) set -x ;;
+    --template-bucket)
+      global_bucket="${2}"
+      shift
+      ;;
+    --code-bucket)
+      regional_bucket="${2}"
+      shift
+      ;;
+    --version)
+      version="${2}"
+      shift
+      ;;
+    --region)
+      region="${2}"
+      shift
+      ;;
+    --profile)
+      profile="${2}"
+      shift
+      ;;
+    -?*) die "Unknown option: $1" ;;
+    *) break ;;
+    esac
+    shift
+  done
+
+  args=("$@")
+
+  # check required params and arguments
+  [[ -z "${global_bucket}" ]] && usage "Missing required parameter: template-bucket"
+  [[ -z "${regional_bucket}" ]] && usage "Missing required parameter: code-bucket"
+  [[ -z "${version}" ]] && usage "Missing required parameter: version"
+  [[ -z "${region}" ]] && usage "Missing required parameter: region"
+
+  return 0
+}
+
+parse_params "$@"
+msg "Build parameters:"
+msg "- Template bucket: ${global_bucket}"
+msg "- Code bucket: ${regional_bucket}-${region}"
+msg "- Version: ${version}"
+msg "- Region: ${region}"
+msg "- Profile: ${profile}"
+
+echo ""
+sleep 3
+s3domain="s3.$region.amazonaws.com"
 
 # Check if region is supported:
 if [ "$region" != "us-east-1" ] &&
@@ -44,31 +146,22 @@ if [ "$region" != "us-east-1" ] &&
    [ "$region" != "ap-southeast-2" ] &&
    [ "$region" != "ap-northeast-1" ] &&
    [ "$region" != "ap-northeast-2" ]; then
-   echo "ERROR. Rekognition operatorions are not supported in region $region"
+   echo "ERROR. Rekognition operations are not supported in region $region"
    exit 1
 fi
 
-# Make sure wget is installed
-if ! [ -x "$(command -v wget)" ]; then
-  echo "ERROR: Command not found: wget"
-  echo "ERROR: wget is required for downloading lambda layers."
-  echo "ERROR: Please install wget and rerun this script."
-  exit 1
-fi
-
-# Build source S3 Bucket
+# Make sure aws cli is installed
 if [[ ! -x "$(command -v aws)" ]]; then
 echo "ERROR: This script requires the AWS CLI to be installed. Please install it then run again."
 exit 1
 fi
 
 # Get reference for all important folders
-template_dir="$PWD"
-dist_dir="$template_dir/dist"
-source_dir="$template_dir/../source"
-workflows_dir="$template_dir/../source/mie-workflows"
-webapp_dir="$template_dir/../source/webapp"
-echo "template_dir: ${template_dir}"
+build_dir="$PWD"
+source_dir="$build_dir/../source"
+consumer_dir="$build_dir/../source/consumer"
+global_dist_dir="$build_dir/global-s3-assets"
+regional_dist_dir="$build_dir/regional-s3-assets"
 
 # Create and activate a temporary Python environment for this script.
 echo "------------------------------------------------------------------------------"
@@ -87,229 +180,71 @@ fi
 VENV=$(mktemp -d)
 python3 -m venv "$VENV"
 source "$VENV"/bin/activate
-pip install --quiet boto3 chalice docopt pyyaml jsonschema
-export PYTHONPATH="$PYTHONPATH:$source_dir/lib/MediaInsightsEngineLambdaHelper/"
-echo "PYTHONPATH=$PYTHONPATH"
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to install required Python libraries."
-    exit 1
-fi
 
 echo "------------------------------------------------------------------------------"
 echo "Create distribution directory"
 echo "------------------------------------------------------------------------------"
 
 # Setting up directories
-echo "rm -rf $dist_dir"
-rm -rf "$dist_dir"
-# Create new dist directory
-echo "mkdir -p $dist_dir"
-mkdir -p "$dist_dir"
-
-echo "------------------------------------------------------------------------------"
-echo "Building MIEHelper package"
-echo "------------------------------------------------------------------------------"
-
-cd "$source_dir"/lib/MediaInsightsEngineLambdaHelper || exit 1
-rm -rf build
-rm -rf dist
-rm -rf Media_Insights_Engine_Lambda_Helper.egg-info
-python3 setup.py bdist_wheel > /dev/null
-echo -n "Created: "
-find "$source_dir"/lib/MediaInsightsEngineLambdaHelper/dist/
-cd "$template_dir"/ || exit 1
-
-echo "------------------------------------------------------------------------------"
-echo "Building Lambda Layers"
-echo "------------------------------------------------------------------------------"
-# Build MediaInsightsEngineLambdaHelper Python package
-cd "$template_dir"/lambda_layer_factory/ || exit 1
-rm -f media_insights_engine_lambda_layer_python*.zip*
-rm -f Media_Insights_Engine*.whl
-cp -R "$source_dir"/lib/MediaInsightsEngineLambdaHelper .
-cd MediaInsightsEngineLambdaHelper/ || exit 1
-echo "Building MIE Lambda Helper python library"
-python3 setup.py bdist_wheel > /dev/null
-cp dist/*.whl ../
-cp dist/*.whl "$source_dir"/lib/MediaInsightsEngineLambdaHelper/dist/
-echo "MIE Lambda Helper python library is at $source_dir/lib/MediaInsightsEngineLambdaHelper/dist/"
-cd "$source_dir"/lib/MediaInsightsEngineLambdaHelper/dist/ || exit 1
-ls -1 "$(pwd)"/*.whl
-if [ $? -ne 0 ]; then
-  echo "ERROR: Failed to build MIE Lambda Helper python library"
-  exit 1
-fi
-cd "$template_dir"/lambda_layer_factory/ || exit 1
-rm -rf MediaInsightsEngineLambdaHelper/
-file=$(ls Media_Insights_Engine*.whl)
-# Note, $(pwd) will be mapped to /packages/ in the Docker container used for building the Lambda zip files. We reference /packages/ in requirements.txt for that reason.
-# Add the whl file to requirements.txt if it is not already there
-mv requirements.txt requirements.txt.old
-cat requirements.txt.old | grep -v "Media_Insights_Engine_Lambda_Helper" > requirements.txt
-echo "/packages/$file" >> requirements.txt;
-# Build Lambda layer zip files and rename them to the filenames expected by media-insights-stack.yaml. The Lambda layer build script runs in Docker.
-# If Docker is not installed, then we'll use prebuilt Lambda layer zip files.
-echo "Running build-lambda-layer.sh:"
-echo ""
-rm -rf lambda_layer-python-* lambda_layer-python*.zip
-./build-lambda-layer.sh requirements.txt
-if [ $? -eq 0 ]; then
-  mv lambda_layer-python3.6.zip media_insights_engine_lambda_layer_python3.6.zip
-  mv lambda_layer-python3.7.zip media_insights_engine_lambda_layer_python3.7.zip
-  mv lambda_layer-python3.8.zip media_insights_engine_lambda_layer_python3.8.zip
-  rm -rf lambda_layer-python-3.6/ lambda_layer-python-3.7/ lambda_layer-python-3.8/
-  echo "Lambda layer build script completed.";
-else
-  echo "WARNING: Lambda layer build script failed. We'll use a pre-built Lambda layers instead.";
-  s3domain="s3-$region.amazonaws.com"
-  if [ "$region" = "us-east-1" ]; then
-    s3domain="s3.amazonaws.com"
-  fi
-  echo "Downloading https://rodeolabz-$region.$s3domain/media_insights_engine/media_insights_engine_lambda_layer_python3.6.zip"
-  wget -q https://rodeolabz-"$region"."$s3domain"/media_insights_engine/media_insights_engine_lambda_layer_python3.6.zip
-  echo "Downloading https://rodeolabz-$region.$s3domain/media_insights_engine/media_insights_engine_lambda_layer_python3.7.zip"
-  wget -q https://rodeolabz-"$region"."$s3domain"/media_insights_engine/media_insights_engine_lambda_layer_python3.7.zip
-  echo "Downloading https://rodeolabz-$region.$s3domain/media_insights_engine/media_insights_engine_lambda_layer_python3.8.zip"
-  wget -q https://rodeolabz-"$region"."$s3domain"/media_insights_engine/media_insights_engine_lambda_layer_python3.8.zip
-fi
-echo "Copying Lambda layer zips to $dist_dir:"
-cp -v media_insights_engine_lambda_layer_python3.6.zip "$dist_dir"
-cp -v media_insights_engine_lambda_layer_python3.7.zip "$dist_dir"
-cp -v media_insights_engine_lambda_layer_python3.8.zip "$dist_dir"
-mv requirements.txt.old requirements.txt
-cd "$template_dir" || exit 1
+echo "rm -rf $global_dist_dir"
+rm -rf "$global_dist_dir"
+echo "mkdir -p $global_dist_dir"
+mkdir -p "$global_dist_dir"
+echo "rm -rf $regional_dist_dir"
+rm -rf "$regional_dist_dir"
+echo "mkdir -p $regional_dist_dir"
+mkdir -p "$regional_dist_dir"
+echo "mkdir -p $regional_dist_dir/website/"
+mkdir -p "$regional_dist_dir"/website/
 
 echo "------------------------------------------------------------------------------"
 echo "CloudFormation Templates"
 echo "------------------------------------------------------------------------------"
-
+echo ""
 echo "Preparing template files:"
-cp "$workflows_dir/instant_translate.yaml" "$dist_dir/instant_translate.template"
-cp "$workflows_dir/transcribe.yaml" "$dist_dir/transcribe.template"
-cp "$workflows_dir/rekognition.yaml" "$dist_dir/rekognition.template"
-cp "$workflows_dir/comprehend.yaml" "$dist_dir/comprehend.template"
-cp "$workflows_dir/MieCompleteWorkflow.yaml" "$dist_dir/MieCompleteWorkflow.template"
-cp "$workflows_dir/aws-content-localization.yaml" "$dist_dir/aws-content-localization.template"
-cp "$workflows_dir/vod_translate_workflow.yaml" "$dist_dir/vod_translate_workflow.template"
-cp "$source_dir/operators/operator-library.yaml" "$dist_dir/media-insights-operator-library.template"
-cp "$template_dir/media-insights-stack.yaml" "$dist_dir/media-insights-stack.template"
-cp "$template_dir/string.yaml" "$dist_dir/string.template"
-cp "$template_dir/media-insights-test-operations-stack.yaml" "$dist_dir/media-insights-test-operations-stack.template"
-cp "$template_dir/media-insights-dataplane-streaming-stack.template" "$dist_dir/media-insights-dataplane-streaming-stack.template"
-cp "$workflows_dir/rekognition.yaml" "$dist_dir/rekognition.template"
-cp "$source_dir/mie-consumers/elastic/media-insights-elasticsearch.yaml" "$dist_dir/media-insights-elasticsearch.template"
-cp "$source_dir/mie-consumers/elastic/media-insights-elasticsearch.yaml" "$dist_dir/media-insights-s3.template"
-cp "$webapp_dir/media-insights-webapp.yaml" "$dist_dir/media-insights-webapp.template"
-find "$dist_dir"
-echo "Updating code source bucket in template files with '$bucket'"
+cp "$build_dir/aws-content-localization-auth.yaml" "$global_dist_dir/aws-content-localization-auth.template"
+cp "$build_dir/aws-content-localization-elasticsearch.yaml" "$global_dist_dir/aws-content-localization-elasticsearch.template"
+cp "$build_dir/aws-content-localization-web.yaml" "$global_dist_dir/aws-content-localization-web.template"
+cp "$build_dir/aws-content-localization-use-existing-mie-stack.yaml" "$global_dist_dir/aws-content-localization-use-existing-mie-stack.template"
+cp "$build_dir/aws-content-localization-video-workflow.yaml" "$global_dist_dir/aws-content-localization-video-workflow.template"
+cp "$build_dir/aws-content-localization.yaml" "$global_dist_dir/aws-content-localization.template"
+find "$global_dist_dir"
+echo "Updating template source bucket in template files with '$global_bucket'"
+echo "Updating code source bucket in template files with '$regional_bucket'"
 echo "Updating solution version in template files with '$version'"
-new_bucket="s/%%BUCKET_NAME%%/$bucket-$region/g"
+new_global_bucket="s/%%GLOBAL_BUCKET_NAME%%/$global_bucket/g"
+new_regional_bucket="s/%%REGIONAL_BUCKET_NAME%%/$regional_bucket/g"
 new_version="s/%%VERSION%%/$version/g"
 # Update templates in place. Copy originals to [filename].orig
-sed -i.orig -e "$new_bucket" "$dist_dir/media-insights-stack.template"
-sed -i.orig -e "$new_version" "$dist_dir/media-insights-stack.template"
-sed -i.orig -e "$new_bucket" "$dist_dir/media-insights-operator-library.template"
-sed -i.orig -e "$new_version" "$dist_dir/media-insights-operator-library.template"
-sed -i.orig -e "$new_bucket" "$dist_dir/media-insights-test-operations-stack.template"
-sed -i.orig -e "$new_version" "$dist_dir/media-insights-test-operations-stack.template"
-sed -i.orig -e "$new_bucket" "$dist_dir/media-insights-dataplane-streaming-stack.template"
-sed -i.orig -e "$new_version" "$dist_dir/media-insights-dataplane-streaming-stack.template"
-sed -i.orig -e "$new_bucket" "$dist_dir/media-insights-elasticsearch.template"
-sed -i.orig -e "$new_version" "$dist_dir/media-insights-elasticsearch.template"
-sed -i.orig -e "$new_bucket" "$dist_dir/media-insights-s3.template"
-sed -i.orig -e "$new_version" "$dist_dir/media-insights-s3.template"
-sed -i.orig -e "$new_bucket" "$dist_dir/media-insights-webapp.template"
-sed -i.orig -e "$new_version" "$dist_dir/media-insights-webapp.template"
+sed -i.orig -e "$new_global_bucket" "$global_dist_dir/aws-content-localization-auth.template"
+sed -i.orig -e "$new_regional_bucket" "$global_dist_dir/aws-content-localization-auth.template"
+sed -i.orig -e "$new_version" "$global_dist_dir/aws-content-localization-auth.template"
+sed -i.orig -e "$new_global_bucket" "$global_dist_dir/aws-content-localization-elasticsearch.template"
+sed -i.orig -e "$new_regional_bucket" "$global_dist_dir/aws-content-localization-elasticsearch.template"
+sed -i.orig -e "$new_version" "$global_dist_dir/aws-content-localization-elasticsearch.template"
+sed -i.orig -e "$new_global_bucket" "$global_dist_dir/aws-content-localization-web.template"
+sed -i.orig -e "$new_regional_bucket" "$global_dist_dir/aws-content-localization-web.template"
+sed -i.orig -e "$new_version" "$global_dist_dir/aws-content-localization-web.template"
+sed -i.orig -e "$new_global_bucket" "$global_dist_dir/aws-content-localization-use-existing-mie-stack.template"
+sed -i.orig -e "$new_regional_bucket" "$global_dist_dir/aws-content-localization-use-existing-mie-stack.template"
+sed -i.orig -e "$new_version" "$global_dist_dir/aws-content-localization-use-existing-mie-stack.template"
+sed -i.orig -e "$new_global_bucket" "$global_dist_dir/aws-content-localization-video-workflow.template"
+sed -i.orig -e "$new_regional_bucket" "$global_dist_dir/aws-content-localization-video-workflow.template"
+sed -i.orig -e "$new_version" "$global_dist_dir/aws-content-localization-video-workflow.template"
+sed -i.orig -e "$new_global_bucket" "$global_dist_dir/aws-content-localization.template"
+sed -i.orig -e "$new_regional_bucket" "$global_dist_dir/aws-content-localization.template"
+sed -i.orig -e "$new_version" "$global_dist_dir/aws-content-localization.template"
+
 
 echo "------------------------------------------------------------------------------"
-echo "Operators"
+echo "Elasticsearch consumer Function"
 echo "------------------------------------------------------------------------------"
 
-# ------------------------------------------------------------------------------"
-# Operator Failed Lambda
-# ------------------------------------------------------------------------------"
+echo "Building Elasticsearch Consumer function"
+cd "$source_dir/consumer" || exit 1
 
-echo "Building 'operator failed' function"
-cd "$source_dir/operators/operator_failed" || exit 1
 [ -e dist ] && rm -r dist
 mkdir -p dist
-zip -q dist/operator_failed.zip operator_failed.py
-cp "./dist/operator_failed.zip" "$dist_dir/operator_failed.zip"
-
-# ------------------------------------------------------------------------------"
-# Mediainfo Operation
-# ------------------------------------------------------------------------------"
-
-echo "Building Mediainfo function"
-cd "$source_dir/operators/mediainfo" || exit 1
-# Make lambda package
-[ -e dist ] && rm -r dist
-mkdir -p dist
-# Add the app code to the dist zip.
-zip -q dist/mediainfo.zip mediainfo.py
-# Zip is ready. Copy it to the distribution directory.
-cp "./dist/mediainfo.zip" "$dist_dir/mediainfo.zip"
-
-# ------------------------------------------------------------------------------"
-# Mediaconvert Operations
-# ------------------------------------------------------------------------------"
-
-echo "Building Media Convert function"
-cd "$source_dir/operators/mediaconvert" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-zip -q dist/start_media_convert.zip start_media_convert.py
-zip -q dist/get_media_convert.zip get_media_convert.py
-cp "./dist/start_media_convert.zip" "$dist_dir/start_media_convert.zip"
-cp "./dist/get_media_convert.zip" "$dist_dir/get_media_convert.zip"
-
-# ------------------------------------------------------------------------------"
-# Thumbnail Operations
-# ------------------------------------------------------------------------------"
-
-echo "Building Thumbnail function"
-cd "$source_dir/operators/thumbnail" || exit 1
-# Make lambda package
-[ -e dist ] && rm -r dist
-mkdir -p dist
-if ! [ -d ./dist/start_thumbnail.zip ]; then
-  zip -q -r9 ./dist/start_thumbnail.zip .
-elif [ -d ./dist/start_thumbnail.zip ]; then
-  echo "Package already present"
-fi
-zip -q -g dist/start_thumbnail.zip start_thumbnail.py
-cp "./dist/start_thumbnail.zip" "$dist_dir/start_thumbnail.zip"
-
-if ! [ -d ./dist/check_thumbnail.zip ]; then
-  zip -q -r9 ./dist/check_thumbnail.zip .
-elif [ -d ./dist/check_thumbnail.zip ]; then
-  echo "Package already present"
-fi
-zip -q -g dist/check_thumbnail.zip check_thumbnail.py
-cp "./dist/check_thumbnail.zip" "$dist_dir/check_thumbnail.zip"
-
-# ------------------------------------------------------------------------------"
-# Transcribe Operations
-# ------------------------------------------------------------------------------"
-
-echo "Building Transcribe functions"
-cd "$source_dir/operators/transcribe" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-zip -q -g ./dist/start_transcribe.zip ./start_transcribe.py
-zip -q -g ./dist/get_transcribe.zip ./get_transcribe.py
-cp "./dist/start_transcribe.zip" "$dist_dir/start_transcribe.zip"
-cp "./dist/get_transcribe.zip" "$dist_dir/get_transcribe.zip"
-
-# ------------------------------------------------------------------------------"
-# Create Captions Operations
-# ------------------------------------------------------------------------------"
-
-echo "Building Stage completion function"
-cd "$source_dir/operators/captions" || exit
-[ -e dist ] && rm -r dist
-mkdir -p dist
-
 [ -e package ] && rm -r package
 mkdir -p package
 echo "preparing packages from requirements.txt"
@@ -319,31 +254,73 @@ pushd package || exit 1
 touch ./setup.cfg
 echo "[install]" > ./setup.cfg
 echo "prefix= " >> ./setup.cfg
-# Try and handle failure if pip version mismatch
-if [ -x "$(command -v pip)" ]; then
-  pip install --quiet -r ../requirements.txt --target .
-elif [ -x "$(command -v pip3)" ]; then
-  echo "pip not found, trying with pip3"
-  pip3 install --quiet -r ../requirements.txt --target .
-elif ! [ -x "$(command -v pip)" ] && ! [ -x "$(command -v pip3)" ]; then
-  echo "No version of pip installed. This script requires pip. Cleaning up and exiting."
+if ! [ -x "$(command -v pip3)" ]; then
+  echo "pip3 not installed. This script requires pip3. Exiting."
   exit 1
+else
+    pip3 install --quiet -r ../requirements.txt --target .
 fi
-zip -q -r9 ../dist/webcaptions.zip .
+zip -q -r9 ../dist/esconsumer.zip .
 popd || exit 1
 
-zip -g ./dist/webcaptions.zip ./webcaptions.py
-cp "./dist/webcaptions.zip" "$dist_dir/webcaptions.zip"
+zip -q -g dist/esconsumer.zip ./*.py
+cp "./dist/esconsumer.zip" "$regional_dist_dir/esconsumer.zip"
 
-# ------------------------------------------------------------------------------"
-# Translate Operations
-# ------------------------------------------------------------------------------"
+echo "------------------------------------------------------------------------------"
+echo "Build vue website"
+echo "------------------------------------------------------------------------------"
 
-echo "Building Translate function"
-cd "$source_dir/operators/translate" || exit 1
+echo "Building Vue.js website"
+cd "$source_dir/website/" || exit 1
+echo "Installing node dependencies"
+npm install
+echo "Compiling the vue app"
+npm run build
+echo "Finished building website"
+cp -r ./dist/* "$regional_dist_dir"/website/
+rm -rf ./dist
+
+echo "------------------------------------------------------------------------------"
+echo "Generate webapp manifest file"
+echo "------------------------------------------------------------------------------"
+# This manifest file contains a list of all the webapp files. It is necessary in
+# order to use the least privileges for deploying the webapp.
+#
+# Details: The website_helper.py Lambda function needs this list in order to copy
+# files from $regional_dist_dir/website to the ContentAnalysisWebsiteBucket (see aws-content-localization-web.yaml).  Since the manifest file is computed during build
+# time, the website_helper.py Lambda can use that to figure out what files to copy
+# instead of doing a list bucket operation, which would require ListBucket permission.
+# Furthermore, the S3 bucket used to host AWS solutions (s3://solutions-reference)
+# disallows ListBucket access, so the only way to copy files from
+# s3://solutions-reference/aws-media-insights-content-localization/latest/website to
+# ContentAnalysisWebsiteBucket is to use said manifest file.
+#
+cd $regional_dist_dir"/website/" || exit 1
+manifest=(`find . -type f | sed 's|^./||'`)
+manifest_json=$(IFS=,;printf "%s" "${manifest[*]}")
+echo "[\"$manifest_json\"]" | sed 's/,/","/g' > "$source_dir/helper/webapp-manifest.json"
+cat "$source_dir/helper/webapp-manifest.json"
+
+echo "------------------------------------------------------------------------------"
+echo "Build website helper function"
+echo "------------------------------------------------------------------------------"
+
+echo "Building website helper function"
+cd "$source_dir/helper" || exit 1
 [ -e dist ] && rm -r dist
 mkdir -p dist
-[ -e package ] && rm -r package
+zip -q -g ./dist/websitehelper.zip ./website_helper.py webapp-manifest.json
+cp "./dist/websitehelper.zip" "$regional_dist_dir/websitehelper.zip"
+
+echo "------------------------------------------------------------------------------"
+echo "Creating deployment package for anonymous data logger"
+echo "------------------------------------------------------------------------------"
+
+echo "Building anonymous data logger"
+cd "$source_dir/anonymous-data-logger" || exit 1
+[ -e dist ] && rm -rf dist
+mkdir -p dist
+[ -e package ] && rm -rf package
 mkdir -p package
 echo "create requirements for lambda"
 # Make lambda package
@@ -353,396 +330,70 @@ echo "create lambda package"
 touch ./setup.cfg
 echo "[install]" > ./setup.cfg
 echo "prefix= " >> ./setup.cfg
-# Try and handle failure if pip version mismatch
-if [ -x "$(command -v pip)" ]; then
-  pip install --quiet -r ../requirements.txt --target .
-elif [ -x "$(command -v pip3)" ]; then
-  echo "pip not found, trying with pip3"
-  pip3 install --quiet -r ../requirements.txt --target .
-elif ! [ -x "$(command -v pip)" ] && ! [ -x "$(command -v pip3)" ]; then
- echo "No version of pip installed. This script requires pip. Cleaning up and exiting."
- exit 1
-fi
-if ! [ -d ../dist/start_translate.zip ]; then
-  zip -q -r9 ../dist/start_translate.zip .
-
-elif [ -d ../dist/start_translate.zip ]; then
+pip3 install --quiet -r ../requirements.txt --target .
+cp -R ../lib .
+if ! [ -d ../dist/anonymous-data-logger.zip ]; then
+  zip -q -r9 ../dist/anonymous-data-logger.zip .
+elif [ -d ../dist/anonymous-data-logger.zip ]; then
   echo "Package already present"
 fi
 popd || exit 1
-zip -q -g ./dist/start_translate.zip ./start_translate.py
-cp "./dist/start_translate.zip" "$dist_dir/start_translate.zip"
+zip -q -g ./dist/anonymous-data-logger.zip ./anonymous-data-logger.py
+cp "./dist/anonymous-data-logger.zip" "$regional_dist_dir/anonymous-data-logger.zip"
 
-# ------------------------------------------------------------------------------"
-# Polly operators
-# ------------------------------------------------------------------------------"
+# Skip copy dist to S3 if building for solution builder because
+# that pipeline takes care of copying the dist in another script.
+if [ "$global_bucket" != "solutions-reference" ] && [ "$global_bucket" != "solutions-test-reference" ]; then
 
-echo "Building Polly function"
-cd "$source_dir/operators/polly" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-zip -q -g ./dist/start_polly.zip ./start_polly.py
-zip -q -g ./dist/get_polly.zip ./get_polly.py
-cp "./dist/start_polly.zip" "$dist_dir/start_polly.zip"
-cp "./dist/get_polly.zip" "$dist_dir/get_polly.zip"
-
-# ------------------------------------------------------------------------------"
-# Comprehend operators
-# ------------------------------------------------------------------------------"
-
-echo "Building Comprehend function"
-cd "$source_dir/operators/comprehend" || exit 1
-
-[ -e dist ] && rm -r dist
-[ -e package ] && rm -r package
-for dir in ./*;
-  do
-    echo "$dir"
-    cd "$dir" || exit 1
-    mkdir -p dist
-    mkdir -p package
-    echo "creating requirements for lambda"
-    # Package dependencies listed in requirements.txt
-    pushd package || exit 1
-    # Handle distutils install errors with setup.cfg
-    touch ./setup.cfg
-    echo "[install]" > ./setup.cfg
-    echo "prefix= " >> ./setup.cfg
-    if [[ $dir == "./key_phrases" ]]; then
-      if ! [ -d ../dist/start_key_phrases.zip ]; then
-        zip -q -r9 ../dist/start_key_phrases.zip .
-      elif [ -d ../dist/start_key_phrases.zip ]; then
-        echo "Package already present"
-      fi
-      if ! [ -d ../dist/get_key_phrases.zip ]; then
-        zip -q -r9 ../dist/get_key_phrases.zip .
-
-      elif [ -d ../dist/get_key_phrases.zip ]; then
-        echo "Package already present"
-      fi
-      popd || exit 1
-      zip -q -g dist/start_key_phrases.zip start_key_phrases.py
-      zip -q -g dist/get_key_phrases.zip get_key_phrases.py
-      echo "$PWD"
-      cp ./dist/start_key_phrases.zip "$dist_dir/start_key_phrases.zip"
-      cp ./dist/get_key_phrases.zip "$dist_dir/get_key_phrases.zip"
-      mv -f ./dist/*.zip "$dist_dir"
-    elif [[ "$dir" == "./entities" ]]; then
-      if ! [ -d ../dist/start_entity_detection.zip ]; then
-      zip -q -r9 ../dist/start_entity_detection.zip .
-      elif [ -d ../dist/start_entity_detection.zip ]; then
-      echo "Package already present"
-      fi
-      if ! [ -d ../dist/get_entity_detection.zip ]; then
-      zip -q -r9 ../dist/get_entity_detection.zip .
-      elif [ -d ../dist/get_entity_detection.zip ]; then
-      echo "Package already present"
-      fi
-      popd || exit 1
-      echo "$PWD"
-      zip -q -g dist/start_entity_detection.zip start_entity_detection.py
-      zip -q -g dist/get_entity_detection.zip get_entity_detection.py
-      mv -f ./dist/*.zip "$dist_dir"
-    fi
-    cd ..
-  done;
-
-# ------------------------------------------------------------------------------"
-# Rekognition operators
-# ------------------------------------------------------------------------------"
-
-echo "Building Rekognition functions"
-cd "$source_dir/operators/rekognition" || exit 1
-# Make lambda package
-echo "creating lambda packages"
-# All the Python dependencies for Rekognition functions are in the Lambda layer, so
-# we can deploy the zipped source file without dependencies.
-zip -q -r9 generic_data_lookup.zip generic_data_lookup.py
-zip -q -r9 start_celebrity_recognition.zip start_celebrity_recognition.py
-zip -q -r9 check_celebrity_recognition_status.zip check_celebrity_recognition_status.py
-zip -q -r9 start_content_moderation.zip start_content_moderation.py
-zip -q -r9 check_content_moderation_status.zip check_content_moderation_status.py
-zip -q -r9 start_face_detection.zip start_face_detection.py
-zip -q -r9 check_face_detection_status.zip check_face_detection_status.py
-zip -q -r9 start_face_search.zip start_face_search.py
-zip -q -r9 check_face_search_status.zip check_face_search_status.py
-zip -q -r9 start_label_detection.zip start_label_detection.py
-zip -q -r9 check_label_detection_status.zip check_label_detection_status.py
-zip -q -r9 start_person_tracking.zip start_person_tracking.py
-zip -q -r9 check_person_tracking_status.zip check_person_tracking_status.py
-zip -q -r9 start_text_detection.zip start_text_detection.py
-zip -q -r9 check_text_detection_status.zip check_text_detection_status.py
-
-mv -f ./*.zip "$dist_dir"
-
-# ------------------------------------------------------------------------------"
-# Test operators
-# ------------------------------------------------------------------------------"
-
-echo "Building test operators"
-cd "$source_dir/operators/test" || exit
-[ -e dist ] && rm -r dist
-mkdir -p dist
-zip -q -g ./dist/test_operations.zip ./test.py
-cp "./dist/test_operations.zip" "$dist_dir/test_operations.zip"
-
-echo "------------------------------------------------------------------------------"
-echo "DynamoDB Stream Function"
-echo "------------------------------------------------------------------------------"
-
-echo "Building DDB Stream function"
-cd "$source_dir/dataplanestream" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-[ -e package ] && rm -r package
-mkdir -p package
-echo "preparing packages from requirements.txt"
-# Package dependencies listed in requirements.txt
-pushd package || exit 1
-# Handle distutils install errors with setup.cfg
-touch ./setup.cfg
-echo "[install]" > ./setup.cfg
-echo "prefix= " >> ./setup.cfg
-# Try and handle failure if pip version mismatch
-if [ -x "$(command -v pip)" ]; then
-  pip install --quiet -r ../requirements.txt --target .
-elif [ -x "$(command -v pip3)" ]; then
-  echo "pip not found, trying with pip3"
-  pip3 install --quiet -r ../requirements.txt --target .
-elif ! [ -x "$(command -v pip)" ] && ! [ -x "$(command -v pip3)" ]; then
-  echo "No version of pip installed. This script requires pip. Cleaning up and exiting."
-  exit 1
-fi
-zip -q -r9 ../dist/ddbstream.zip .
-popd || exit 1
-
-zip -q -g dist/ddbstream.zip ./*.py
-cp "./dist/ddbstream.zip" "$dist_dir/ddbstream.zip"
-
-echo "------------------------------------------------------------------------------"
-echo "Elasticsearch consumer Function"
-echo "------------------------------------------------------------------------------"
-
-echo "Building Elasticsearch Consumer function"
-cd "$source_dir/mie-consumers/elastic" || exit 1
-
-[ -e dist ] && rm -r dist
-mkdir -p dist
-[ -e package ] && rm -r package
-mkdir -p package
-echo "preparing packages from requirements.txt"
-# Package dependencies listed in requirements.txt
-pushd package || exit 1
-# Handle distutils install errors with setup.cfg
-touch ./setup.cfg
-echo "[install]" > ./setup.cfg
-echo "prefix= " >> ./setup.cfg
-# Try and handle failure if pip version mismatch
-if [ -x "$(command -v pip)" ]; then
-  pip install --quiet -r ../requirements.txt --target .
-elif [ -x "$(command -v pip3)" ]; then
-  echo "pip not found, trying with pip3"
-  pip3 install --quiet -r ../requirements.txt --target .
-elif ! [ -x "$(command -v pip)" ] && ! [ -x "$(command -v pip3)" ]; then
-  echo "No version of pip installed. This script requires pip. Cleaning up and exiting."
-  exit 1
-fi
-zip -q -r9 ../dist/esconsumer.zip .
-popd || exit 1
-
-zip -q -g dist/esconsumer.zip ./*.py
-cp "./dist/esconsumer.zip" "$dist_dir/esconsumer.zip"
-
-echo "------------------------------------------------------------------------------"
-echo "Workflow Scheduler"
-echo "------------------------------------------------------------------------------"
-
-echo "Building Workflow scheduler"
-cd "$source_dir/workflow" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-[ -e package ] && rm -r package
-mkdir -p package
-echo "preparing packages from requirements.txt"
-# Package dependencies listed in requirements.txt
-cd package || exit 1
-# Handle distutils install errors with setup.cfg
-touch ./setup.cfg
-echo "[install]" > ./setup.cfg
-echo "prefix= " >> ./setup.cfg
-cd ..
-# Try and handle failure if pip version mismatch
-if [ -x "$(command -v pip)" ]; then
-  pip install --quiet -r ./requirements.txt --target package/
-elif [ -x "$(command -v pip3)" ]; then
-  echo "pip not found, trying with pip3"
-  pip3 install --quiet -r ./requirements.txt --target package/
-elif ! [ -x "$(command -v pip)" ] && ! [ -x "$(command -v pip3)" ]; then
-  echo "No version of pip installed. This script requires pip. Cleaning up and exiting."
-  exit 1
-fi
-cd package || exit 1
-zip -q -r9 ../dist/workflow.zip .
-cd ..
-zip -q -g dist/workflow.zip ./*.py
-cp "./dist/workflow.zip" "$dist_dir/workflow.zip"
-
-echo "------------------------------------------------------------------------------"
-echo "Workflow API Stack"
-echo "------------------------------------------------------------------------------"
-
-echo "Building Workflow Lambda function"
-cd "$source_dir/workflowapi" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-if ! [ -x "$(command -v chalice)" ]; then
-  echo 'Chalice is not installed. It is required for this solution. Exiting.'
-  exit 1
-fi
-echo "running chalice..."
-chalice package --merge-template external_resources.json dist
-echo "...chalice done"
-echo "cp ./dist/sam.json $dist_dir/media-insights-workflowapi-stack.template"
-cp dist/sam.json "$dist_dir"/media-insights-workflowapi-stack.template
-if [ $? -ne 0 ]; then
-  echo "ERROR: Failed to build workflow api template"
-  exit 1
-fi
-echo "cp ./dist/deployment.zip $dist_dir/workflowapi.zip"
-cp ./dist/deployment.zip "$dist_dir"/workflowapi.zip
-if [ $? -ne 0 ]; then
-  echo "ERROR: Failed to build workflow api template"
-  exit 1
-fi
-rm -f ./dist/*
-
-echo "------------------------------------------------------------------------------"
-echo "Workflow Execution DynamoDB Stream Function"
-echo "------------------------------------------------------------------------------"
-
-echo "Building Workflow Execution DDB Stream function"
-cd "$source_dir/workflowstream" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-[ -e package ] && rm -r package
-mkdir -p package
-echo "preparing packages from requirements.txt"
-# Package dependencies listed in requirements.txt
-pushd package || exit 1
-# Handle distutils install errors with setup.cfg
-touch ./setup.cfg
-echo "[install]" > ./setup.cfg
-echo "prefix= " >> ./setup.cfg
-# Try and handle failure if pip version mismatch
-if [ -x "$(command -v pip)" ]; then
-  pip install --quiet -r ../requirements.txt --target .
-elif [ -x "$(command -v pip3)" ]; then
-  echo "pip not found, trying with pip3"
-  pip3 install --quiet -r ../requirements.txt --target .
-elif ! [ -x "$(command -v pip)" ] && ! [ -x "$(command -v pip3)" ]; then
-  echo "No version of pip installed. This script requires pip. Cleaning up and exiting."
-  exit 1
-fi
-zip -q -r9 ../dist/workflowstream.zip .
-popd || exit 1
-
-zip -q -g dist/workflowstream.zip ./*.py
-cp "./dist/workflowstream.zip" "$dist_dir/workflowstream.zip"
-
-echo "------------------------------------------------------------------------------"
-echo "Dataplane API Stack"
-echo "------------------------------------------------------------------------------"
-
-echo "Building Dataplane Stack"
-cd "$source_dir/dataplaneapi" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-if ! [ -x "$(command -v chalice)" ]; then
-  echo 'Chalice is not installed. It is required for this solution. Exiting.'
-  exit 1
-fi
-chalice package --merge-template external_resources.json dist
-echo "cp ./dist/sam.json $dist_dir/media-insights-dataplane-api-stack.template"
-cp dist/sam.json "$dist_dir"/media-insights-dataplane-api-stack.template
-if [ $? -ne 0 ]; then
-  echo "ERROR: Failed to build dataplane api template"
-  exit 1
-fi
-echo "cp ./dist/deployment.zip $dist_dir/dataplaneapi.zip"
-cp ./dist/deployment.zip "$dist_dir"/dataplaneapi.zip
-if [ $? -ne 0 ]; then
-  echo "ERROR: Failed to build dataplane api template"
-  exit 1
-fi
-rm -f ./dist/*
-
-echo "------------------------------------------------------------------------------"
-echo "Demo website stack"
-echo "------------------------------------------------------------------------------"
-
-echo "Building website helper function"
-cd "$webapp_dir/helper" || exit 1
-[ -e dist ] && rm -r dist
-mkdir -p dist
-zip -q -g ./dist/websitehelper.zip ./website_helper.py
-cp "./dist/websitehelper.zip" "$dist_dir/websitehelper.zip"
-
-echo "Building Vue.js website"
-cd "$webapp_dir/" || exit 1
-echo "Installing node dependencies"
-npm install
-echo "Compiling the vue app"
-npm run build
-echo "Built demo webapp"
-
-echo "------------------------------------------------------------------------------"
-echo "Copy dist to S3"
-echo "------------------------------------------------------------------------------"
-
-echo "Copying the prepared distribution to S3..."
-for file in "$dist_dir"/*.zip
-do
-  if [ -n "$profile" ]; then
-    aws s3 cp "$file" s3://"$bucket"-"$region"/media-insights-solution/"$version"/code/ --profile "$profile"
-  else
-    aws s3 cp "$file" s3://"$bucket"-"$region"/media-insights-solution/"$version"/code/
+  echo "------------------------------------------------------------------------------"
+  echo "Copy dist to S3"
+  echo "------------------------------------------------------------------------------"
+  echo "Validating ownership of distribution buckets before copying deployment assets to them..."
+  # Get account id
+  account_id=$(aws sts get-caller-identity --query Account --output text)
+  if [ $? -ne 0 ]; then
+    msg "ERROR: Failed to get AWS account ID"
+    die 1
   fi
-done
-for file in "$dist_dir"/*.template
-do
-  if [ -n "$profile" ]; then
-    aws s3 cp "$file" s3://"$bucket"-"$region"/media-insights-solution/"$version"/cf/ --profile "$profile"
-  else
-    aws s3 cp "$file" s3://"$bucket"-"$region"/media-insights-solution/"$version"/cf/
+  # Validate ownership of $global_dist_dir
+  aws s3api head-bucket --bucket $global_bucket --expected-bucket-owner $account_id
+  if [ $? -ne 0 ]; then
+    msg "ERROR: Your AWS account does not own s3://$global_bucket/"
+    die 1
   fi
-done
-echo "Uploading the MIE web app..."
-if [ -n "$profile" ]; then
-  aws s3 cp "$webapp_dir"/dist s3://"$bucket"-"$region"/media-insights-solution/"$version"/code/website --recursive --profile "$profile"
-else
-  aws s3 cp "$webapp_dir"/dist s3://"$bucket"-"$region"/media-insights-solution/"$version"/code/website --recursive
+  # Validate ownership of ${regional_bucket}-${region}
+  aws s3api head-bucket --bucket ${regional_bucket}-${region} --expected-bucket-owner $account_id
+  if [ $? -ne 0 ]; then
+    msg "ERROR: Your AWS account does not own s3://${regional_bucket}-${region} "
+    die 1
+  fi
+  # Copy deployment assets to distribution buckets
+  cd "$build_dir"/ || exit 1
+  echo "Copying the prepared distribution to:"
+  echo "s3://$global_bucket/aws-content-localization/$version/"
+  echo "s3://${regional_bucket}-${region}/aws-content-localization/$version/"
+  set -x
+  aws s3 sync $global_dist_dir s3://$global_bucket/aws-content-localization/$version/ $(if [ ! -z $profile ]; then echo "--profile $profile"; fi)
+  aws s3 sync $regional_dist_dir s3://${regional_bucket}-${region}/aws-content-localization/$version/ $(if [ ! -z $profile ]; then echo "--profile $profile"; fi)
+  set +x
+
+  echo "------------------------------------------------------------------------------"
+  echo "S3 packaging complete"
+  echo "------------------------------------------------------------------------------"
+
+  echo ""
+  echo "Template to deploy:"
+  echo ""
+  echo "With existing MIE deployment:"
+  echo "TEMPLATE='"https://"$global_bucket"."$s3domain"/aws-content-localization/"$version"/aws-content-localization-use-existing-mie-stack.template"'"
+  echo "Without existing MIE deployment:"
+  echo "TEMPLATE='"https://"$global_bucket"."$s3domain"/aws-content-localization/"$version"/aws-content-localization.template"'"
+
+  echo "https://"$global_bucket"."$s3domain"/aws-content-localization/"$version"/aws-content-localization.template" > template_url_that_deploys_mie_as_nested_stack.txt
+  echo "https://"$global_bucket"."$s3domain"/aws-content-localization/"$version"/aws-content-localization-use-existing-mie-stack.template" > template_url_that_uses_an_existing_mie_stack.txt
+
 fi
 
-echo "------------------------------------------------------------------------------"
-echo "S3 packaging complete"
-echo "------------------------------------------------------------------------------"
-
-# Deactivate and remove the temporary python virtualenv used to run this script
-deactivate
-rm -rf "$VENV"
-
-echo "------------------------------------------------------------------------------"
-echo "Cleaning up complete"
-echo "------------------------------------------------------------------------------"
-
-echo ""
-echo "Template to deploy:"
-if [ "$region" == "us-east-1" ]; then
-  echo https://"$bucket"-"$region".s3.amazonaws.com/media-insights-solution/"$version"/cf/media-insights-stack.template
-else
-  echo https://"$bucket"-"$region".s3."$region".amazonaws.com/media-insights-solution/"$version"/cf/media-insights-stack.template
-fi
-
-echo "------------------------------------------------------------------------------"
+cleanup
 echo "Done"
-echo "------------------------------------------------------------------------------"
+exit 0

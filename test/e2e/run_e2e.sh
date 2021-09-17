@@ -70,10 +70,7 @@ export TEST_MEDIA_PATH="../test-media/"
 export TEST_IMAGE="sample-image.jpg"
 export TEST_VIDEO="sample-video.mp4"
 export TEST_AUDIO="sample-audio.m4a"
-export TEST_TEXT="sample-text.txt"
-export TEST_JSON="sample-data.json"
-export TEST_FACE_IMAGE="sample-face.jpg"
-export TEST_FACE_COLLECTION_ID="temporary_face_collection"
+export TEST_VOCABULARY_FILE="uitestvocabulary"
 
 # Retrieve exports from mie stack
 #export BUCKET_NAME=`aws cloudformation list-stack-resources --profile default --stack-name $MIE_STACK_NAME --region $REGION --output text --query 'StackResourceSummaries[?LogicalResourceId == \`Dataplane\`]'.PhysicalResourceId`
@@ -81,6 +78,11 @@ export TEST_FACE_COLLECTION_ID="temporary_face_collection"
 echo "------------------------------------------------------------------------------"
 
 pytest -s -W ignore::DeprecationWarning -p no:cacheproviders
+
+######TESTING: test a single file
+#pytest -s -W ignore::DeprecationWarning -p no:cacheproviders test_workflow_reprocess.py
+#pytest -s -W ignore::DeprecationWarning -p no:cacheproviders test_app.py
+######TESTING: test a single file
 
 if [ $? -eq 0 ]; then
     exit 0

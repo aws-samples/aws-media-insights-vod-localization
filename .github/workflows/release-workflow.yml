@@ -18,10 +18,10 @@ jobs:
         uses: actions/checkout@v2.3.4
         with:
           ref: development
-
       - name: Create release branch
-        run: git checkout -b release/v${{ github.event.inputs.version }}
-
+        run: |
+          echo "Creating release/v${{ github.event.inputs.version }} branch"
+          git checkout -b release/v${{ github.event.inputs.version }}
       - name: Initialize mandatory git config
         run: |
           git config user.name "GitHub Actions"
@@ -29,60 +29,47 @@ jobs:
       - name: Push new branch
         run: git push origin release/v${{ github.event.inputs.version }}
 
-
-  build-content-localization-us-west-2:
+  build-mie-dev-us-west-2:
     needs: create-release-branch
     runs-on: ubuntu-latest
+    env:
+      REGION: 'us-west-2'
     steps:
-      - name: Check out release branch
-        uses: actions/checkout@v2.3.4
+      - name: Checkout MIE development branch
+        uses: actions/checkout@v2
         with:
-          ref: release/v${{ github.event.inputs.version }}
-
+          repository: awslabs/aws-media-insights-engine
+          ref: development
       - name: Initialize AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
-
-      - name: Generate short sha
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
         run: |
           echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
-
       - name: Run build script
         run: |
           cd deployment
-          CONTENT_LOCALIZATION_STACK_NAME=${{ github.event.inputs.releaseName }}
-          EMAIL=micontentlocalization@gmail.com
-          REGION=us-west-2
+          REGION=${{ env.REGION }}
           VERSION=v${{ github.event.inputs.version }}
           DIST_OUTPUT_BUCKET=micl-dev
-          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          ./build.sh $DIST_OUTPUT_BUCKET-$REGION $VERSION $REGION
-          echo "read in the template"
-          read -r TEMPLATE < ../src/templateUrlMieRelease.txt
-
-      - name: 'Upload One-click Deployment Artifact'
+          TEMPLATE_OUTPUT_BUCKET=micl-dev-${{ env.REGION }}
+          ./build-s3-dist.sh --no-layer --template-bucket $TEMPLATE_OUTPUT_BUCKET --code-bucket $DIST_OUTPUT_BUCKET --version $VERSION --region $REGION
+          echo "Templates artifact:"
+          cat ./templateUrl.txt
+      - name: 'Upload MIE One-click Deployment Artifact'
         uses: actions/upload-artifact@v2
         with:
-          name: templateUrlMieReleaseOr
-          path: src/templateUrlMieRelease.txt
+          name: templateUrl-${{ env.REGION }}
+          path: deployment/templateUrl.txt
           retention-days: 3
-      - name: 'Upload Developer Deployment Artifact'
-        uses: actions/upload-artifact@v2
-        with:
-          name: templateUrlMieDevelopmentOr
-          path: src/templateUrlMieDevelopment.txt
-          retention-days: 3
-  
-  deploy-content-localization-us-west-2:
-    needs: 
-      - build-content-localization-us-west-2
+  deploy-mie-dev-us-west-2:
+    needs: build-mie-dev-us-west-2
     runs-on: ubuntu-latest
     env:
-      MIE_REGION: 'us-west-2'
-      CONTENT_LOCALIZATION_STACK_NAME: ${{ github.event.inputs.releaseName }}
+      REGION: 'us-west-2'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
@@ -91,199 +78,340 @@ jobs:
       - name: Initialize build AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
-            aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
-            aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
-            aws-region: us-west-2
-      - name: Generate short sha
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
         run: |
-          
           echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Define stack names
+        run: |
+          echo "CONTENT_LOCALIZATION_STACK_NAME=pr${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+          echo "MIE_STACK_NAME=prm${{ env.SHORT_SHA }}" >> $GITHUB_ENV
       - name: Download all workflow run artifacts
         uses: actions/download-artifact@v2
       - name: Deploy
         run: |
-          EMAIL=micontentlocalization@gmail.com
-          REGION=us-west-2
+          EMAIL="sample@example.com"
+          REGION=${{ env.REGION }}
+          MIE_STACK_NAME=${{ env.MIE_STACK_NAME }}
+          CONTENT_LOCALIZATION_STACK_NAME=${{ env.CONTENT_LOCALIZATION_STACK_NAME }}
           VERSION=v${{ github.event.inputs.version }}
           DIST_OUTPUT_BUCKET=micl-dev
           TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          CLOUDFORMATION_TEMPLATE=`cat templateUrlMieReleaseOr/templateUrlMieRelease.txt`
-          
-          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLOUDFORMATION_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=ElasticSearchNodeSize,ParameterValue=t2.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
-          aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLOUDFORMATION_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=ElasticSearchNodeSize,ParameterValue=t2.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
-          aws cloudformation wait stack-create-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+          MIE_TEMPLATE=`cat templateUrl-${{ env.REGION }}/templateUrl.txt`
+
+          # Delete $MIE_STACK_NAME if it already exists.
+          # This is necessary in order to rerun github action workflows.
+          # If $MIE_STACK_NAME exists...
+          if [ $(echo $(aws cloudformation list-stacks --query 'StackSummaries[?StackName==`$MIE_STACK_NAME`]' --output text)  | tr -d '\n' | wc -c) > 0 ]; then
+            echo "Removing stack, $CONTENT_LOCALIZATION_STACK_NAME"
+            # Then delete $MIE_STACK_NAME, but first delete $CONTENT_LOCALIZATION_STACK_NAME since we can't delete $MIE_STACK_NAME until we've removed the dependent stack.
+            aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            echo "Removing stack, $MIE_STACK_NAME"
+            aws cloudformation delete-stack --stack-name $MIE_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $MIE_STACK_NAME
+          fi
+
+          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $MIE_TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
+
+          aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $MIE_TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
+          aws cloudformation wait stack-create-complete --stack-name $MIE_STACK_NAME
           exit 0
 
-  scan-3rd-party-data-us-west-2:
-    needs: build-content-localization-us-west-2
+  build-mie-dev-us-east-1:
+    needs: create-release-branch
     runs-on: ubuntu-latest
     env:
-      MIE_REGION: 'us-west-2'
+      REGION: 'us-east-1'
+    steps:
+      - name: Checkout MIE development branch
+        uses: actions/checkout@v2
+        with:
+          repository: awslabs/aws-media-insights-engine
+          ref: development
+      - name: Initialize AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
+        run: |
+          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Run build script
+        run: |
+          cd deployment
+          REGION=${{ env.REGION }}
+          VERSION=v${{ github.event.inputs.version }}
+          DIST_OUTPUT_BUCKET=micl-dev
+          TEMPLATE_OUTPUT_BUCKET=micl-dev-${{ env.REGION }}
+          ./build-s3-dist.sh --no-layer --template-bucket $TEMPLATE_OUTPUT_BUCKET --code-bucket $DIST_OUTPUT_BUCKET --version $VERSION --region $REGION
+          echo "Templates artifact:"
+          cat ./templateUrl.txt
+      - name: 'Upload MIE One-click Deployment Artifact'
+        uses: actions/upload-artifact@v2
+        with:
+          name: templateUrl-${{ env.REGION }}
+          path: deployment/templateUrl.txt
+          retention-days: 3
+  deploy-mie-dev-us-east-1:
+    needs: build-mie-dev-us-east-1
+    runs-on: ubuntu-latest
+    env:
+      REGION: 'us-east-1'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
+      - name: Initialize build AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
+        run: |
+          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Define stack names
+        run: |
+          echo "CONTENT_LOCALIZATION_STACK_NAME=pr${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+          echo "MIE_STACK_NAME=prm${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+      - name: Download all workflow run artifacts
+        uses: actions/download-artifact@v2
+      - name: Deploy
+        run: |
+          EMAIL="sample@example.com"
+          REGION=${{ env.REGION }}
+          MIE_STACK_NAME=${{ env.MIE_STACK_NAME }}
+          CONTENT_LOCALIZATION_STACK_NAME=${{ env.CONTENT_LOCALIZATION_STACK_NAME }}
+          VERSION=v${{ github.event.inputs.version }}
+          DIST_OUTPUT_BUCKET=micl-dev
+          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
+          MIE_TEMPLATE=`cat templateUrl-${{ env.REGION }}/templateUrl.txt`
 
+          # Delete $MIE_STACK_NAME if it already exists.
+          # This is necessary in order to rerun github action workflows.
+          # If $MIE_STACK_NAME exists...
+          if [ $(echo $(aws cloudformation list-stacks --query 'StackSummaries[?StackName==`$MIE_STACK_NAME`]' --output text)  | tr -d '\n' | wc -c) > 0 ]; then
+            echo "Removing stack, $CONTENT_LOCALIZATION_STACK_NAME"
+            # Then delete $MIE_STACK_NAME, but first delete $CONTENT_LOCALIZATION_STACK_NAME since we can't delete $MIE_STACK_NAME until we've removed the dependent stack.
+            aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            echo "Removing stack, $MIE_STACK_NAME"
+            aws cloudformation delete-stack --stack-name $MIE_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $MIE_STACK_NAME
+          fi
+
+          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $MIE_TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
+
+          aws cloudformation create-stack --stack-name $MIE_STACK_NAME --template-url $MIE_TEMPLATE --region $REGION --parameters ParameterKey=DeployTestResources,ParameterValue=true ParameterKey=MaxConcurrentWorkflows,ParameterValue=10 ParameterKey=DeployAnalyticsPipeline,ParameterValue=true ParameterKey=EnableXrayTrace,ParameterValue=true --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
+          aws cloudformation wait stack-create-complete --stack-name $MIE_STACK_NAME
+          exit 0
+
+  build-content-localization-dev-us-west-2:
+    needs: create-release-branch
+    runs-on: ubuntu-latest
+    env:
+      REGION: 'us-west-2'
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v2.3.4
+        with:
+          ref: release/v${{ github.event.inputs.version }}
+      - name: Initialize AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
+        run: |
+          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Setup build environment
+        run: |
+          DATETIME=$(date '+%s')
+          echo "DIST_OUTPUT_BUCKET=micl-dev" >> $GITHUB_ENV
+          echo "TEMPLATE_OUTPUT_BUCKET=aws-content-localization-$DATETIME" >> $GITHUB_ENV
+      - name: Run build script
+        run: |
+          cd deployment
+          REGION=${{ env.REGION }}
+          VERSION=v${{ github.event.inputs.version }}
+          DIST_OUTPUT_BUCKET=micl-dev
+          TEMPLATE_OUTPUT_BUCKET=micl-dev-$REGION
+          ./build-s3-dist.sh --template-bucket ${TEMPLATE_OUTPUT_BUCKET} --code-bucket ${DIST_OUTPUT_BUCKET} --version ${VERSION} --region ${REGION}
+          echo "Templates artifacts:"
+          cat ./template_url_that_uses_an_existing_mie_stack.txt
+          cat ./template_url_that_deploys_mie_as_nested_stack.txt
+      - name: 'Upload CL One-click Deployment Artifact'
+        uses: actions/upload-artifact@v2
+        with:
+          name: templateUrlMieDevelopment-${{ env.REGION }}
+          path: deployment/template_url_that_uses_an_existing_mie_stack.txt
+          retention-days: 3
+
+  build-content-localization-dev-us-east-1:
+    needs: create-release-branch
+    runs-on: ubuntu-latest
+    env:
+      REGION: 'us-east-1'
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v2.3.4
+        with:
+          ref: release/v${{ github.event.inputs.version }}
+      - name: Initialize AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
+        run: |
+          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Run build script
+        run: |
+          cd deployment
+          REGION=${{ env.REGION }}
+          VERSION=v${{ github.event.inputs.version }}
+          DIST_OUTPUT_BUCKET=micl-dev
+          TEMPLATE_OUTPUT_BUCKET=micl-dev-$REGION
+          ./build-s3-dist.sh --template-bucket ${TEMPLATE_OUTPUT_BUCKET} --code-bucket ${DIST_OUTPUT_BUCKET} --version ${VERSION} --region ${REGION}
+          echo "Templates artifacts:"
+          cat ./template_url_that_uses_an_existing_mie_stack.txt
+          cat ./template_url_that_deploys_mie_as_nested_stack.txt
+      - name: 'Upload CL One-click Deployment Artifact'
+        uses: actions/upload-artifact@v2
+        with:
+          name: templateUrlMieDevelopment-${{ env.REGION }}
+          path: deployment/template_url_that_uses_an_existing_mie_stack.txt
+          retention-days: 3
+
+  scan-us-west-2:
+    needs: build-content-localization-dev-us-west-2
+    runs-on: ubuntu-latest
+    env:
+      REGION: 'us-west-2'
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v2.3.4
+        with:
+          ref: release/v${{ github.event.inputs.version }}
       - name: Initialize test AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
-            aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
-            aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
-            aws-region: us-west-2
+          aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Run cfn_nag
+        uses: stelligent/cfn_nag@master
+        continue-on-error: true
+        with:
+          input_path: deployment
 
-      # FIXME - need to identify what to scan for here - new entries in packages, 
+      # FIXME - This is not working.  Need to test more
+      # check it with Hawkeye
+      # - name: Hawkeye Scanner
+      #   uses: ./.github/actions/hawkeye-scan
+  scan-3rd-party-data-us-west-2:
+    needs: build-content-localization-dev-us-west-2
+    runs-on: ubuntu-latest
+    env:
+      REGION: 'us-west-2'
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v2.3.4
+        with:
+          ref: release/v${{ github.event.inputs.version }}
+      - name: Initialize test AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      # FIXME - need to identify what to scan for here - new entries in packages,
       # python dependencies, other copyrighted code ...
-      - name: Get stack name
-        run: |
-          echo "CONTENT_LOCALIZATION_STACK_NAME=${{ github.event.inputs.releaseName }}"
-
       - name: Scan for new third party packages
         run: |
           echo "TBD - scan for new 3rd party pacakges"
-      
       # FIXME - need to identify what to scan for here - is Trufflehog enough?
       - name: Scan for sensitive data
         run: |
           echo "TBD - Scan for sensitive data"
-
       # FIXME - need to make sure this is working properly
       # scan for various types of keys and tokens
       - name: Trufflehog Scan
         uses: edplato/trufflehog-actions-scan@master
         with:
-          scanArguments: '--regex --entropy=False'   
-
-  scan-us-west-2:
-    needs: build-content-localization-us-west-2
+          scanArguments: '--regex --entropy=False'
+  scan-us-east-1:
+    needs: build-content-localization-dev-us-east-1
     runs-on: ubuntu-latest
     env:
-      MIE_REGION: 'us-west-2'
+      REGION: 'us-east-1'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
-
       - name: Initialize test AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
-            aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
-            aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
-            aws-region: us-west-2
-
+          aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
       - name: Run cfn_nag
         uses: stelligent/cfn_nag@master
         continue-on-error: true
         with:
-            input_path: deployment
-
-  test-us-west-2:
-    needs: deploy-content-localization-us-west-2
+          input_path: deployment
+      # FIXME - This is not working.  Need to test more
+      # check it with Hawkeye
+      # - name: Hawkeye Scanner
+      #   uses: ./.github/actions/hawkeye-scan
+  scan-3rd-party-data-us-east-1:
+    needs: build-content-localization-dev-us-east-1
     runs-on: ubuntu-latest
     env:
-      MIE_REGION: 'us-west-2'
-      CONTENT_LOCALIZATION_STACK_NAME: ${{ github.event.inputs.releaseName }}
+      REGION: 'us-east-1'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
-
-      - name: Initialize AWS credentials
+      - name: Initialize test AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
-            aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
-            aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
-            aws-region: us-west-2
-
-      - name: Run cfn_nag
-        uses: stelligent/cfn_nag@master
-        continue-on-error: true
-        with:
-            input_path: deployment
-      # - name: Run unit tests
-      #   run: |
-      #     cd $GITHUB_WORKSPACE
-      #     cd test/unit
-      #     ./run_unit.sh workflowapi
-      #     ./run_unit.sh dataplaneapi
-      # - name: Run integ tests
-      #   run: |
-      #     cd $GITHUB_WORKSPACE
-      #     cd test/integ
-      #     ./run_integ.sh
-      # - name: Run E2E tests
-      #   run: |
-      #     cd $GITHUB_WORKSPACE
-      #     cd test/e2e
-      #     ./run_e2e.sh
-
-      - name: Initialize build AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
-          
-      - name: Delete stack
+          aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      # FIXME - need to identify what to scan for here - new entries in packages,
+      # python dependencies, other copyrighted code ...
+      - name: Scan for new third party packages
         run: |
-          aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME
-          aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
-  
-  build-content-localization-us-east-1:
-    needs: create-release-branch
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out release branch
-        uses: actions/checkout@v2.3.4
-        with:
-          ref: release/v${{ github.event.inputs.version }}
-
-      - name: Initialize AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Generate short sha
+          echo "TBD - scan for new 3rd party pacakges"
+      # FIXME - need to identify what to scan for here - is Trufflehog enough?
+      - name: Scan for sensitive data
         run: |
-          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
-
-      - name: Run build script
-        run: |
-          cd deployment
-          CONTENT_LOCALIZATION_STACK_NAME=${{ github.event.inputs.releaseName }}
-          EMAIL=micontentlocalization@gmail.com
-          REGION=us-east-1
-          VERSION=v${{ github.event.inputs.version }}
-          DIST_OUTPUT_BUCKET=micl-dev
-          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          ./build.sh $DIST_OUTPUT_BUCKET-$REGION $VERSION $REGION
-          echo "read in the template"
-          read -r TEMPLATE < ../src/templateUrlMieRelease.txt
-
-      - name: 'Upload One-click Deployment Artifact'
-        uses: actions/upload-artifact@v2
+          echo "TBD - Scan for sensitive data"
+      # FIXME - need to make sure this is working properly
+      # scan for various types of keys and tokens
+      - name: Trufflehog Scan
+        uses: edplato/trufflehog-actions-scan@master
         with:
-          name: templateUrlMieReleaseNv
-          path: src/templateUrlMieRelease.txt
-          retention-days: 3
-      - name: 'Upload Developer Deployment Artifact'
-        uses: actions/upload-artifact@v2
-        with:
-          name: templateUrlMieDevelopmentNv
-          path: src/templateUrlMieDevelopment.txt
-          retention-days: 3
-  
-  deploy-content-localization-us-east-1:
-    needs: 
-      - build-content-localization-us-west-2
+          scanArguments: '--regex --entropy=False'
+
+  deploy-content-localization-dev-us-west-2:
+    needs:
+      - scan-us-west-2
+      - scan-3rd-party-data-us-west-2
+      - deploy-mie-dev-us-west-2
     runs-on: ubuntu-latest
     env:
-      MIE_REGION: 'us-east-1'
-      CONTENT_LOCALIZATION_STACK_NAME: ${{ github.event.inputs.releaseName }}
+      REGION: 'us-west-2'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
@@ -292,48 +420,136 @@ jobs:
       - name: Initialize build AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
-            aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
-            aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
-            aws-region: us-east-1
-      - name: Generate short sha
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
         run: |
-         
           echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Define stack names
+        run: |
+          echo "CONTENT_LOCALIZATION_STACK_NAME=pr${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+          echo "MIE_STACK_NAME=prm${{ env.SHORT_SHA }}" >> $GITHUB_ENV
       - name: Download all workflow run artifacts
         uses: actions/download-artifact@v2
       - name: Deploy
         run: |
           EMAIL=micontentlocalization@gmail.com
-          REGION=us-east-1
+          REGION=${{ env.REGION }}
+          MIE_STACK_NAME=${{ env.MIE_STACK_NAME }}
+          CONTENT_LOCALIZATION_STACK_NAME=${{ env.CONTENT_LOCALIZATION_STACK_NAME }}
           VERSION=v${{ github.event.inputs.version }}
           DIST_OUTPUT_BUCKET=micl-dev
           TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          CLOUDFORMATION_TEMPLATE=`cat templateUrlMieReleaseNv/templateUrlMieRelease.txt`
-          
-          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLOUDFORMATION_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=ElasticSearchNodeSize,ParameterValue=t2.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
-          aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLOUDFORMATION_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=ElasticSearchNodeSize,ParameterValue=t2.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
+          CLO_TEMPLATE=`cat templateUrlMieDevelopment-${{ env.REGION }}/template_url_that_uses_an_existing_mie_stack.txt`
+
+          # Delete $CONTENT_LOCALIZATION_STACK_NAME if it already exists.
+          # This is necessary in order to rerun github action workflows.
+          # If $CONTENT_LOCALIZATION_STACK_NAME exists...
+          if [ $(echo $(aws cloudformation list-stacks --query 'StackSummaries[?StackName==`$CONTENT_LOCALIZATION_STACK_NAME`]' --output text)  | tr -d '\n' | wc -c) > 0 ]; then
+            # Then delete $CONTENT_LOCALIZATION_STACK_NAME...
+            echo "Removing $CONTENT_LOCALIZATION_STACK_NAME so we can use that stack name again"
+            aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            if [ $? -ne 0 ]; then
+              # try once more if the wait failed
+              echo "Trying to remove $CONTENT_LOCALIZATION_STACK_NAME one more time"
+              aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+              aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            fi
+          fi
+
+          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLO_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME ParameterKey=ElasticSearchNodeSize,ParameterValue=t3.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
+
+          aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLO_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME ParameterKey=ElasticSearchNodeSize,ParameterValue=t3.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
           aws cloudformation wait stack-create-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
           exit 0
 
-  test-us-east-1:
-    needs: deploy-content-localization-us-east-1
+  deploy-content-localization-dev-us-east-1:
+    needs:
+      - scan-us-east-1
+      - scan-3rd-party-data-us-east-1
+      - deploy-mie-dev-us-east-1
     runs-on: ubuntu-latest
     env:
-      MIE_REGION: 'us-east-1'
-      CONTENT_LOCALIZATION_STACK_NAME: ${{ github.event.inputs.releaseName }}
+      REGION: 'us-east-1'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
+      - name: Initialize build AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
+        run: |
+          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Define stack names
+        run: |
+          echo "CONTENT_LOCALIZATION_STACK_NAME=pr${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+          echo "MIE_STACK_NAME=prm${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+      - name: Download all workflow run artifacts
+        uses: actions/download-artifact@v2
+      - name: Deploy
+        run: |
+          EMAIL=micontentlocalization@gmail.com
+          REGION=${{ env.REGION }}
+          MIE_STACK_NAME=${{ env.MIE_STACK_NAME }}
+          CONTENT_LOCALIZATION_STACK_NAME=${{ env.CONTENT_LOCALIZATION_STACK_NAME }}
+          VERSION=v${{ github.event.inputs.version }}
+          DIST_OUTPUT_BUCKET=micl-dev
+          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
+          CLO_TEMPLATE=`cat templateUrlMieDevelopment-${{ env.REGION }}/template_url_that_uses_an_existing_mie_stack.txt`
 
+          # Delete $CONTENT_LOCALIZATION_STACK_NAME if it already exists.
+          # This is necessary in order to rerun github action workflows.
+          # If $CONTENT_LOCALIZATION_STACK_NAME exists...
+          if [ $(echo $(aws cloudformation list-stacks --query 'StackSummaries[?StackName==`$CONTENT_LOCALIZATION_STACK_NAME`]' --output text)  | tr -d '\n' | wc -c) > 0 ]; then
+            # Then delete $CONTENT_LOCALIZATION_STACK_NAME...
+            echo "Removing $CONTENT_LOCALIZATION_STACK_NAME so we can use that stack name again"
+            aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+            aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            if [ $? -ne 0 ]; then
+              # try once more if the wait failed
+              echo "Trying to remove $CONTENT_LOCALIZATION_STACK_NAME one more time"
+              aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --region $REGION
+              aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+            fi
+          fi
+
+          echo "deploy cloudformation: 'aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLO_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME ParameterKey=ElasticSearchNodeSize,ParameterValue=t3.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback'"
+
+          aws cloudformation create-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME --template-url $CLO_TEMPLATE --region $REGION --parameters ParameterKey=AdminEmail,ParameterValue=$EMAIL ParameterKey=MieStackName,ParameterValue=$MIE_STACK_NAME ParameterKey=ElasticSearchNodeSize,ParameterValue=t3.small.elasticsearch --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND --disable-rollback
+          aws cloudformation wait stack-create-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+          exit 0
+
+
+  test-us-west-2:
+    needs: deploy-content-localization-dev-us-west-2
+    runs-on: ubuntu-latest
+    env:
+      REGION: 'us-west-2'
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v2.3.4
+        with:
+          ref: release/v${{ github.event.inputs.version }}
       - name: Initialize AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
             aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
             aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
-            aws-region: us-east-1
-
+            aws-region: ${{ env.REGION }}
+      - name: Define short sha
+        run: |
+          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Define stack names
+        run: |
+          echo "CONTENT_LOCALIZATION_STACK_NAME=pr${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+          echo "MIE_STACK_NAME=prm${{ env.SHORT_SHA }}" >> $GITHUB_ENV
       - name: Run cfn_nag
         uses: stelligent/cfn_nag@master
         continue-on-error: true
@@ -360,17 +576,73 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
+          aws-region: ${{ env.REGION }}
       - name: Delete stack
         run: |
-          aws cloudformation delete-stack --stack-name $CONTENT_LOCALIZATION_STACK_NAME
-          aws cloudformation wait stack-delete-complete --stack-name $CONTENT_LOCALIZATION_STACK_NAME
+          aws cloudformation delete-stack --stack-name ${{ env.CONTENT_LOCALIZATION_STACK_NAME }} --region ${{ env.REGION }}
+          aws cloudformation wait stack-delete-complete --stack-name ${{ env.CONTENT_LOCALIZATION_STACK_NAME }} --region ${{ env.REGION }}
+          aws cloudformation delete-stack --stack-name ${{ env.MIE_STACK_NAME }} --region ${{ env.REGION }}
+          aws cloudformation wait stack-delete-complete --stack-name ${{ env.MIE_STACK_NAME }} --region ${{ env.REGION }}
+
+  test-us-east-1:
+    needs: deploy-content-localization-dev-us-east-1
+    runs-on: ubuntu-latest
+    env:
+      REGION: 'us-east-1'
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@v2.3.4
+        with:
+          ref: release/v${{ github.event.inputs.version }}
+      - name: Initialize AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.TEST_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.TEST_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Define short sha
+        run: |
+          echo "SHORT_SHA=`git rev-parse --short HEAD`" >> $GITHUB_ENV
+      - name: Define stack names
+        run: |
+          echo "CONTENT_LOCALIZATION_STACK_NAME=pr${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+          echo "MIE_STACK_NAME=prm${{ env.SHORT_SHA }}" >> $GITHUB_ENV
+      - name: Run cfn_nag
+        uses: stelligent/cfn_nag@master
+        continue-on-error: true
+        with:
+          input_path: deployment
+      # - name: Run unit tests
+      #   run: |
+      #     cd $GITHUB_WORKSPACE
+      #     cd test/unit
+      #     ./run_unit.sh workflowapi
+      #     ./run_unit.sh dataplaneapi
+      # - name: Run integ tests
+      #   run: |
+      #     cd $GITHUB_WORKSPACE
+      #     cd test/integ
+      #     ./run_integ.sh
+      # - name: Run E2E tests
+      #   run: |
+      #     cd $GITHUB_WORKSPACE
+      #     cd test/e2e
+      #     ./run_e2e.sh
+      - name: Initialize build AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.REGION }}
+      - name: Delete stack
+        run: |
+          aws cloudformation delete-stack --stack-name ${{ env.CONTENT_LOCALIZATION_STACK_NAME }} --region ${{ env.REGION }}
+          aws cloudformation wait stack-delete-complete --stack-name ${{ env.CONTENT_LOCALIZATION_STACK_NAME }} --region ${{ env.REGION }}
+          aws cloudformation delete-stack --stack-name ${{ env.MIE_STACK_NAME }} --region ${{ env.REGION }}
+          aws cloudformation wait stack-delete-complete --stack-name ${{ env.MIE_STACK_NAME }} --region ${{ env.REGION }}
 
   update-version-in-docs:
     needs:
-      - scan-us-west-2
-      - scan-3rd-party-data-us-west-2
       - test-us-west-2
       - test-us-east-1
     runs-on: ubuntu-latest
@@ -379,7 +651,6 @@ jobs:
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
-
       - name: Initialize mandatory git config
         run: |
           git config user.name "GitHub Actions"
@@ -390,85 +661,81 @@ jobs:
           git add README.md
           git commit -m "Update one-click links with new version"
           git push origin release/v${{ github.event.inputs.version }}
-  
+
   host-us-west-2:
     needs: update-version-in-docs
     runs-on: ubuntu-latest
+    env:
+      REGION: 'us-west-2'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
-
       - name: Initialize AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
-
+          aws-region: ${{ env.REGION }}
       - name: Run build script
         run: |
           cd deployment
-          CONTENT_LOCALIZATION_STACK_NAME=${{ github.event.inputs.releaseName }}
-          REGION=us-west-2
+          REGION=${{ env.REGION }}
           VERSION=v${{ github.event.inputs.version }}
-          DIST_OUTPUT_BUCKET=elementalrodeo99
-          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          ./build.sh $DIST_OUTPUT_BUCKET-$REGION $VERSION $REGION
-  
+          DIST_OUTPUT_BUCKET=rodeolabz
+          TEMPLATE_OUTPUT_BUCKET=rodeolabz-$REGION
+          ./build-s3-dist.sh --template-bucket $TEMPLATE_OUTPUT_BUCKET --code-bucket $DIST_OUTPUT_BUCKET --version $VERSION --region $REGION
+
   host-us-east-1:
     needs: update-version-in-docs
     runs-on: ubuntu-latest
+    env:
+      REGION: 'us-east-1'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
-
       - name: Initialize AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
+          aws-region: ${{ env.REGION }}
       - name: Run build script
         run: |
           cd deployment
-          CONTENT_LOCALIZATION_STACK_NAME=${{ github.event.inputs.releaseName }}
-          REGION=us-east-1
+          REGION=${{ env.REGION }}
           VERSION=v${{ github.event.inputs.version }}
-          DIST_OUTPUT_BUCKET=elementalrodeo99
-          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          echo "./build.sh $DIST_OUTPUT_BUCKET-$REGION $VERSION $REGION"
-          ./build.sh $DIST_OUTPUT_BUCKET-$REGION $VERSION $REGION
+          DIST_OUTPUT_BUCKET=rodeolabz
+          TEMPLATE_OUTPUT_BUCKET=rodeolabz-$REGION
+          ./build-s3-dist.sh --template-bucket ${TEMPLATE_OUTPUT_BUCKET} --code-bucket ${DIST_OUTPUT_BUCKET} --version ${VERSION} --region ${REGION}
 
   host-eu-west-1:
     needs: update-version-in-docs
     runs-on: ubuntu-latest
+    env:
+      REGION: 'eu-west-1'
     steps:
       - name: Check out release branch
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
-
       - name: Initialize AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-west-1
-
+          aws-region: ${{ env.REGION }}
       - name: Run build script
         run: |
           cd deployment
-          CONTENT_LOCALIZATION_STACK_NAME=${{ github.event.inputs.releaseName }}
-          REGION=eu-west-1
+          REGION=${{ env.REGION }}
           VERSION=v${{ github.event.inputs.version }}
-          DIST_OUTPUT_BUCKET=elementalrodeo99
-          TEMPLATE_OUTPUT_BUCKET=$DIST_OUTPUT_BUCKET-$REGION
-          ./build.sh $DIST_OUTPUT_BUCKET-$REGION $VERSION $REGION
+          DIST_OUTPUT_BUCKET=rodeolabz
+          TEMPLATE_OUTPUT_BUCKET=rodeolabz-$REGION
+          ./build-s3-dist.sh --template-bucket ${TEMPLATE_OUTPUT_BUCKET} --code-bucket ${DIST_OUTPUT_BUCKET} --version ${VERSION} --region ${REGION}
 
   create-git-staging-branch:
     needs:
@@ -481,10 +748,10 @@ jobs:
         uses: actions/checkout@v2.3.4
         with:
           ref: main
-
       - name: Create staging branch
-        run: git checkout -b staging/v${{ github.event.inputs.version }}
-
+        run: |
+          echo "Creating staging/v${{ github.event.inputs.version }} branch"
+          git checkout -b staging/v${{ github.event.inputs.version }}
       - name: Initialize mandatory git config
         run: |
           git config user.name "GitHub Actions"
@@ -500,7 +767,6 @@ jobs:
         uses: actions/checkout@v2.3.4
         with:
           ref: release/v${{ github.event.inputs.version }}
-
       - name: Initialize mandatory git config
         run: |
           git config user.name "GitHub Actions"
@@ -522,6 +788,7 @@ jobs:
       - name: Push
         run: |
           git push origin staging/v${{ github.event.inputs.version }}
+
   create-release-pr-main:
     needs: perform-staging-rebase
     runs-on: ubuntu-latest
@@ -545,6 +812,8 @@ jobs:
             PR Auto-generated from Github Actions release workflow.
             Review test results here:
             [1]: https://github.com/brandold/aws-media-insights-engine/actions/runs/${{ github.run_id }}
+
+
   pull-release-into-development-pr:
     needs: create-release-pr-main
     runs-on: ubuntu-latest
@@ -553,7 +822,6 @@ jobs:
         uses: actions/checkout@v2.3.4
         with:
           ref: development
-
       - name: Reset development branch
         run: |
           git fetch origin release/v${{ github.event.inputs.version }}:release/v${{ github.event.inputs.version }}

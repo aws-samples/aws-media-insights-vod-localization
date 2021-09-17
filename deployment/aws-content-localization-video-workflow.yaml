@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AWS Content Localization - Deploys video processing workflow"
+
+Parameters:
+  WorkflowCustomResourceArn:
+    Type: String
+    Description: "ARN of the Media Insights custom resource that handles creating operations, stages and workflows"
+    # FIXME - this doesn't work well with nesting - just pass in the layer resource
+    # MediaInsightsWorkflowStack:
+    # Description: "Name of the base media insights workflow stack"
+    # Type: String
+  OperatorLibraryStack:
+    Description: "Name of the MIE operator library stack"
+    Type: String
+
+Resources:
+  WebCaptionsStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "WebCaptionsStage2"
+      Operations:
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:WebCaptions"
+  TranslateStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "Translate"
+      Operations:
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:Translate"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:TranslateWebCaptions"
+  TransformTextStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "TransformText"
+      Operations:
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:WebToSRTCaptions"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:WebToVTTCaptions"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:PollyWebCaptions"
+  PreprocessVideoStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "PreprocessVideo"
+      Operations:
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:Thumbnail"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:Mediainfo"
+  AnalyzeVideoStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "AnalyzeVideo"
+      Operations:
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:GenericDataLookup"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:CelebRecognition"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:FaceDetection"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:FaceSearch"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:LabelDetection"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:PersonTracking"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:TextDetection"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:Mediaconvert"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:TechnicalCueDetection"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:ShotDetection"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:TranscribeVideo"
+
+  AnalyzeTextStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "AnalyzeText"
+      Operations:
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:ComprehendPhrases"
+        - Fn::ImportValue:
+            Fn::Sub: "${OperatorLibraryStack}:ComprehendEntities"
+
+  ContentLocalizationWorkflow:
+    DependsOn:
+      - PreprocessVideoStage
+      - AnalyzeVideoStage
+      - AnalyzeTextStage
+      - WebCaptionsStage
+      - TranslateStage
+      - TransformTextStage
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Workflow"
+      Name: "ContentLocalizationWorkflow"
+      StartAt: !GetAtt PreprocessVideoStage.Name
+      Stages: !Sub
+        - |-
+          {
+            "${PreprocessVideoStage}":{
+              "Next": "${AnalyzeVideoStage}"
+              },
+            "${AnalyzeVideoStage}":{
+              "Next": "${AnalyzeTextStage}"
+              },
+            "${AnalyzeTextStage}":{
+              "Next": "${WebCaptionsStage}"
+              },
+            "${WebCaptionsStage}":{
+              "Next": "${TranslateStage}"
+              },
+            "${TranslateStage}":{
+              "Next": "${TransformTextStage}"
+              },
+            "${TransformTextStage}":{
+              "End": true
+              }
+          }
+        - {
+          PreprocessVideoStage: !GetAtt PreprocessVideoStage.Name,
+          AnalyzeVideoStage: !GetAtt AnalyzeVideoStage.Name,
+          AnalyzeTextStage: !GetAtt AnalyzeTextStage.Name,
+          WebCaptionsStage: !GetAtt WebCaptionsStage.Name,
+          TranslateStage: !GetAtt TranslateStage.Name,
+          TransformTextStage: !GetAtt TransformTextStage.Name
+        }

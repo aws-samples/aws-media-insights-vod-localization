@@ -546,7 +546,7 @@ jobs:
         uses: nanasess/setup-chromedriver@master
       - name: Get access to Cognito user pool
         run: |
-          echo "USER_POOL_ID=`aws cloudformation describe-stacks --region ${{ env.REGION }} --query 'Stacks[?starts_with(StackName, \`cl-AuthStack\`)].Outputs[1].OutputValue' --output text`" >> $GITHUB_ENV
+          echo "USER_POOL_ID=`aws cloudformation describe-stacks --region ${{ env.REGION }} --query 'Stacks[?starts_with(StackName, \`$CONTENT_LOCALIZATION_STACK_NAME-AuthStack\`)].Outputs[1].OutputValue' --output text`" >> $GITHUB_ENV
       - name: Set password for test user
         run: |
           aws cognito-idp admin-set-user-password --user-pool-id $USER_POOL_ID --username ${{ secrets.TEST_ADMIN_EMAIL }} --password ${{ secrets.TEST_ADMIN_PASSWORD }} --region ${{ env.REGION }}  --permanent
@@ -592,7 +592,7 @@ jobs:
         uses: nanasess/setup-chromedriver@master
       - name: Get access to Cognito user pool
         run: |
-          echo "USER_POOL_ID=`aws cloudformation describe-stacks --region ${{ env.REGION }} --query 'Stacks[?starts_with(StackName, \`cl-AuthStack\`)].Outputs[1].OutputValue' --output text`" >> $GITHUB_ENV
+          echo "USER_POOL_ID=`aws cloudformation describe-stacks --region ${{ env.REGION }} --query 'Stacks[?starts_with(StackName, \`$CONTENT_LOCALIZATION_STACK_NAME-AuthStack\`)].Outputs[1].OutputValue' --output text`" >> $GITHUB_ENV
       - name: Set password for test user
         run: |
           aws cognito-idp admin-set-user-password --user-pool-id $USER_POOL_ID --username ${{ secrets.TEST_ADMIN_EMAIL }} --password ${{ secrets.TEST_ADMIN_PASSWORD }} --region ${{ env.REGION }}  --permanent

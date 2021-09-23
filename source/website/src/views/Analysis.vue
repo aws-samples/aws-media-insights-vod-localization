@@ -18,52 +18,6 @@
                 fill
               >
                 <b-tab
-                  title="ML Vision"
-                  active
-                  @click="currentView = 'LabelObjects'; mlTabs = 0"
-                >
-                  <b-container fluid>
-                    <b-row>
-                      <div>
-                        <b-tabs
-                          v-model="mlTabs"
-                          content-class="mt-3"
-                          fill
-                        >
-                          <b-tab
-                            title="Objects"
-                            @click="currentView = 'LabelObjects'"
-                          />
-                          <b-tab
-                            title="Celebrities"
-                            @click="currentView = 'Celebrities'"
-                          />
-                          <b-tab
-                            title="Moderation"
-                            @click="currentView = 'ContentModeration'"
-                          />
-                          <b-tab
-                            title="Faces"
-                            @click="currentView = 'FaceDetection'"
-                          />
-                          <b-tab
-                            title="Words"
-                            @click="currentView = 'TextDetection'"
-                          />
-                          <b-tab
-                            title="Cues"
-                            @click="currentView = 'TechnicalCues'"
-                          />
-                          <b-tab
-                            title="Shots"
-                            @click="currentView = 'ShotDetection'"
-                          />
-                        </b-tabs>
-                      </div>
-                    </b-row>
-                  </b-container>
-                </b-tab>
-                <b-tab
                   v-if="mediaType !== 'image'"
                   title="Speech Recognition"
                   @click="currentView = 'Transcript'; speechTabs = 0"
@@ -94,6 +48,52 @@
                       @click="currentView = 'Entities'"
                     />
                   </b-tabs>
+                </b-tab>
+                <b-tab
+                    title="ML Vision"
+                    active
+                    @click="currentView = 'LabelObjects'; mlTabs = 0"
+                >
+                  <b-container fluid>
+                    <b-row>
+                      <div>
+                        <b-tabs
+                            v-model="mlTabs"
+                            content-class="mt-3"
+                            fill
+                        >
+                          <b-tab
+                              title="Objects"
+                              @click="currentView = 'LabelObjects'"
+                          />
+                          <b-tab
+                              title="Celebrities"
+                              @click="currentView = 'Celebrities'"
+                          />
+                          <b-tab
+                              title="Moderation"
+                              @click="currentView = 'ContentModeration'"
+                          />
+                          <b-tab
+                              title="Faces"
+                              @click="currentView = 'FaceDetection'"
+                          />
+                          <b-tab
+                              title="Words"
+                              @click="currentView = 'TextDetection'"
+                          />
+                          <b-tab
+                              title="Cues"
+                              @click="currentView = 'TechnicalCues'"
+                          />
+                          <b-tab
+                              title="Shots"
+                              @click="currentView = 'ShotDetection'"
+                          />
+                        </b-tabs>
+                      </div>
+                    </b-row>
+                  </b-container>
                 </b-tab>
               </b-tabs>
             </b-row>
@@ -311,11 +311,6 @@
             }
           ],
           captions: [
-            {
-              src: "",
-              lang: "",
-              label: ""
-            }
           ]
         }
       }
@@ -347,7 +342,7 @@
           if (response.data.results) {
             this.num_caption_tracks = response.data.results.CaptionsCollection.length;
             for (const item of response.data.results.CaptionsCollection) {
-    
+
               // TODO: map the language code to a language label
 
               const bucket = item.Results.S3Bucket;
@@ -359,7 +354,7 @@
                 headers: {
                 },
                 body: {
-                  "S3Bucket": bucket, 
+                  "S3Bucket": bucket,
                   "S3Key": key
                   },
                 response: true,
@@ -373,13 +368,13 @@
                 }
               } catch (error) {
                 console.log(error)
-              }   
+              }
             }
             this.videoOptions.captions = captions_collection;
           } else {
             this.videoOptions.captions = []
           }
-          
+
         } catch (error) {
           console.log(error)
         }
@@ -422,11 +417,11 @@
         let input_file = "";
         let proxy_file = "";
 
-       
+
         input_file = s3uri.split("/").slice(-1)[0]
         proxy_file = input_file.split(".")[0]+"_proxy.mp4";
         proxy_key = "private/assets/"+asset_id+"/"+proxy_file
-        
+
         const data = { "S3Bucket": bucket, "S3Key": proxy_key };
 
         // get presigned URL to video file in S3

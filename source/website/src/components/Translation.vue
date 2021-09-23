@@ -646,6 +646,8 @@ export default {
           "ERROR: Failed to get languages."
         );
         console.log(error)
+        this.noTranslation = true
+        this.isBusy = false
       }
 
     },
@@ -1444,6 +1446,8 @@ export default {
             this.isBusy = false
             this.noTranscript = true
           }
+          console.log("response.data")
+          console.log(response.data)
           if (response.data.results) {
             cursor = response.data.cursor;
             this.webCaptions = response.data.results["WebCaptions"]
@@ -1457,6 +1461,7 @@ export default {
       } catch (error) {
         this.showDataplaneAlert = true
         console.log(error)
+        this.isBusy = false
       }
     },
     add_row(index) {
